@@ -112,7 +112,7 @@ class EditFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file."
+        return "Edit a file by replacing old_text with new_text. The old_text must exist exactly in the file. Remember to include 'content' parameter when calling this tool."
     
     @property
     def parameters(self) -> dict[str, Any]:
