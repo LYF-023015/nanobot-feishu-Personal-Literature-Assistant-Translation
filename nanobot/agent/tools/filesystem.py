@@ -88,7 +88,9 @@ class WriteFileTool(Tool):
             "required": ["path", "content"]
         }
     
-    async def execute(self, path: str, content: str, **kwargs: Any) -> str:
+    async def execute(self, path: str, content: str | None = None, **kwargs: Any) -> str:
+        if content is None:
+            return "Error: 'content' parameter is required, but was not provided."
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
