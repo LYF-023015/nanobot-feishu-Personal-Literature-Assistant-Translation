@@ -94,37 +94,7 @@ class AgentLoop:
         self._tool_preview_chars = max(80, self.tool_history_config.preview_chars)
         self._register_default_tools()
 
-    def _inject_tool_digest(self, messages: list[dict[str, Any]], session_key: str) -> list[dict[str, Any]]:
-        """Inject compact recent tool execution summary into current context."""
-        tool_digest = self.sessions.build_tool_digest(
-            session_key,
-            max_events=self._tool_digest_max_events,
-            max_chars=self._tool_digest_max_chars,
-        )
-        if tool_digest:
-            return self.context.add_assistant_message(messages, tool_digest)
-        return messages
 
-    def _record_tool_event(
-        self,
-        session: Any,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result: str,
-        started: float,
-    ) -> None:
-        """Persist structured tool event into session history (excluded from LLM context by default)."""
-        duration_ms = int((time.perf_counter() - started) * 1000)
-        ok = not result.startswith("Error")
-        session.add_tool_event(
-            tool_name=tool_name,
-            arguments=arguments,
-            result=result,
-            ok=ok,
-            duration_ms=duration_ms,
-            args_preview_chars=self._tool_preview_chars,
-            result_preview_chars=self._tool_preview_chars,
-        )
     
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -267,13 +237,16 @@ class AgentLoop:
         
         # Build initial messages (use get_history for LLM-formatted messages)
         messages = self.context.build_messages(
-            history=session.get_history(),
+            history=session.get_history(
+                tool_max_events=self._tool_digest_max_events,
+                tool_preview_chars=self._tool_preview_chars,
+                tool_max_chars=self._tool_digest_max_chars,
+            ),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
-        messages = self._inject_tool_digest(messages, session_key)
         
         # Agent loop
         iteration = 0
@@ -309,6 +282,9 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts
                 )
                 
+                # Persist tool calls onto session list natively
+                session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                
                 # Execute tools
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments, indent=2)
@@ -326,13 +302,10 @@ class AgentLoop:
                     started = time.perf_counter()
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     result_text = result if isinstance(result, str) else str(result)
-                    self._record_tool_event(
-                        session=session,
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        result=result_text,
-                        started=started,
-                    )
+                    
+                    # Instead of _record_tool_event digest, append natively
+                    session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
+                    
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -401,16 +374,21 @@ class AgentLoop:
         
         # Build messages with the announce content
         messages = self.context.build_messages(
-            history=session.get_history(),
+            history=session.get_history(
+                tool_max_events=self._tool_digest_max_events,
+                tool_preview_chars=self._tool_preview_chars,
+                tool_max_chars=self._tool_digest_max_chars,
+            ),
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,
         )
-        messages = self._inject_tool_digest(messages, session_key)
         
         # Agent loop (limited for announce handling)
         iteration = 0
         final_content = None
+        
+        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
         
         while iteration < self.max_iterations:
             iteration += 1
@@ -437,19 +415,18 @@ class AgentLoop:
                     messages, response.content, tool_call_dicts
                 )
                 
+                # Persist tool calls onto session list natively
+                session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments)
                     logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
                     started = time.perf_counter()
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
                     result_text = result if isinstance(result, str) else str(result)
-                    self._record_tool_event(
-                        session=session,
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        result=result_text,
-                        started=started,
-                    )
+                    
+                    session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
+                    
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
@@ -461,7 +438,6 @@ class AgentLoop:
             final_content = "Background task completed."
         
         # Save to session (mark as system message in history)
-        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
         session.add_message("assistant", final_content)
         self.sessions.save(session)
         

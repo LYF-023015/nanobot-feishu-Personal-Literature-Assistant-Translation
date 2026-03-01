@@ -25,7 +25,7 @@ class Session:
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
     
-    def add_message(self, role: str, content: str, **kwargs: Any) -> None:
+    def add_message(self, role: str, content: str | None, **kwargs: Any) -> None:
         """Add a message to the session."""
         msg = {
             "role": role,
@@ -36,63 +36,59 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
     
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
+    def get_history(
+        self, 
+        max_messages: int = 50,
+        tool_max_events: int = 5,
+        tool_preview_chars: int = 200,
+        tool_max_chars: int = 1500,
+    ) -> list[dict[str, Any]]:
         """
-        Get message history for LLM context.
+        Get message history for LLM context, with dynamic truncation for tool results.
         
         Args:
             max_messages: Maximum messages to return.
+            tool_max_events: Number of recent tool calls to keep at max_chars.
+            tool_preview_chars: Character limit for older tool calls.
+            tool_max_chars: Character limit for recent tool calls.
         
         Returns:
-            List of messages in LLM format.
+            List of messages in standard LLM format including tool calls.
         """
         context_messages = [
             m for m in self.messages
             if m.get("include_in_context", True)
         ]
 
-        # Get recent messages
         recent = context_messages[-max_messages:] if len(context_messages) > max_messages else context_messages
+        out = []
+        for m in recent:
+            msg = {"role": m["role"], "content": m["content"]}
+            if "tool_calls" in m:
+                msg["tool_calls"] = m["tool_calls"]
+            if "tool_call_id" in m:
+                msg["tool_call_id"] = m["tool_call_id"]
+            if "name" in m:
+                msg["name"] = m["name"]
+            out.append(msg)
+            
+        # Apply truncation to tool messages in backward order
+        tool_count = 0
+        for i in range(len(out) - 1, -1, -1):
+            if out[i]["role"] == "tool":
+                tool_count += 1
+                content_str = str(out[i]["content"]) if out[i]["content"] is not None else ""
+                
+                if tool_count <= tool_max_events:
+                    limit = tool_max_chars
+                else:
+                    limit = tool_preview_chars
+                
+                if len(content_str) > limit:
+                    out[i]["content"] = content_str[:limit] + f"... (Truncated {len(content_str) - limit} chars for brevity)"
 
-        # Convert to LLM format (just role and content)
-        return [{"role": m["role"], "content": m["content"]} for m in recent]
+        return out
 
-    def add_tool_event(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        result: str,
-        ok: bool,
-        duration_ms: int,
-        args_preview_chars: int = 160,
-        result_preview_chars: int = 180,
-    ) -> None:
-        """Add a structured tool event to session, excluded from default LLM context."""
-        try:
-            args_preview = truncate_string(
-                json.dumps(arguments, ensure_ascii=False, separators=(",", ":")),
-                max_len=args_preview_chars,
-            )
-        except Exception:
-            args_preview = truncate_string(str(arguments), max_len=args_preview_chars)
-
-        result_preview = truncate_string(result, max_len=result_preview_chars)
-        status = "ok" if ok else "error"
-
-        self.add_message(
-            "assistant",
-            f"[tool] {tool_name} {status}",
-            include_in_context=False,
-            tool_event={
-                "name": tool_name,
-                "status": status,
-                "ok": ok,
-                "duration_ms": duration_ms,
-                "args_preview": args_preview,
-                "result_preview": result_preview,
-                "result_len": len(result),
-            },
-        )
 
     def build_tool_digest(
         self,
