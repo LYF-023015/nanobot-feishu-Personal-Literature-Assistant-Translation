@@ -72,6 +72,62 @@ class Session:
                 msg["name"] = m["name"]
             out.append(msg)
             
+        # Repair broken tool sequences caused by truncation or interrupted execution
+        valid_out = []
+        expected_tool_ids = set()
+        last_assistant_with_tools = None
+
+        for msg in out:
+            if msg["role"] == "assistant":
+                if last_assistant_with_tools and expected_tool_ids:
+                    resolved_ids = {tc["id"] for tc in last_assistant_with_tools["tool_calls"]} - expected_tool_ids
+                    if not resolved_ids:
+                        del last_assistant_with_tools["tool_calls"]
+                    else:
+                        last_assistant_with_tools["tool_calls"] = [
+                            tc for tc in last_assistant_with_tools["tool_calls"] 
+                            if tc["id"] in resolved_ids
+                        ]
+                
+                if "tool_calls" in msg:
+                    expected_tool_ids = {tc["id"] for tc in msg["tool_calls"]}
+                    last_assistant_with_tools = msg
+                else:
+                    expected_tool_ids = set()
+                    last_assistant_with_tools = None
+                valid_out.append(msg)
+                
+            elif msg["role"] == "tool":
+                if msg.get("tool_call_id") in expected_tool_ids:
+                    valid_out.append(msg)
+                    expected_tool_ids.discard(msg.get("tool_call_id"))
+            else:
+                if last_assistant_with_tools and expected_tool_ids:
+                    resolved_ids = {tc["id"] for tc in last_assistant_with_tools["tool_calls"]} - expected_tool_ids
+                    if not resolved_ids:
+                        del last_assistant_with_tools["tool_calls"]
+                    else:
+                        last_assistant_with_tools["tool_calls"] = [
+                            tc for tc in last_assistant_with_tools["tool_calls"] 
+                            if tc["id"] in resolved_ids
+                        ]
+                expected_tool_ids = set()
+                last_assistant_with_tools = None
+                valid_out.append(msg)
+
+        if last_assistant_with_tools and expected_tool_ids:
+            resolved_ids = {tc["id"] for tc in last_assistant_with_tools["tool_calls"]} - expected_tool_ids
+            if not resolved_ids:
+                if "tool_calls" in last_assistant_with_tools:
+                    del last_assistant_with_tools["tool_calls"]
+            else:
+                last_assistant_with_tools["tool_calls"] = [
+                    tc for tc in last_assistant_with_tools["tool_calls"] 
+                    if tc["id"] in resolved_ids
+                ]
+
+        out = valid_out
+            
         # Apply truncation to tool messages in backward order
         tool_count = 0
         for i in range(len(out) - 1, -1, -1):
