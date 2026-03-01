@@ -327,9 +327,55 @@ class FeishuChannel(BaseChannel):
         return mime.startswith("image/")
 
     @staticmethod
+    def _wrap_md_tables_in_code_blocks(text: str) -> str:
+        """Wrap Markdown pipe-tables in code blocks.
+
+        Feishu post ``md`` tag does NOT render Markdown tables – the pipe
+        characters and separator lines are silently swallowed.  This helper
+        detects contiguous runs of table rows (lines starting/ending with ``|``
+        or separator lines like ``|---|``) and wraps each run in a fenced code
+        block so the table is at least displayed with monospace alignment.
+        """
+        import re
+
+        lines = text.split("\n")
+        result: list[str] = []
+        table_buf: list[str] = []
+
+        def _is_table_line(line: str) -> bool:
+            stripped = line.strip()
+            if not stripped:
+                return False
+            # Standard MD table row: starts with |
+            if stripped.startswith("|"):
+                return True
+            # Some tables omit leading |, detect separator: ---|----|---
+            if re.match(r"^[\s|:?-]+$", stripped) and "|" in stripped:
+                return True
+            return False
+
+        def _flush_table() -> None:
+            if table_buf:
+                result.append("```")
+                result.extend(table_buf)
+                result.append("```")
+                table_buf.clear()
+
+        for line in lines:
+            if _is_table_line(line):
+                table_buf.append(line)
+            else:
+                _flush_table()
+                result.append(line)
+        _flush_table()
+
+        return "\n".join(result)
+
+    @staticmethod
     def _build_post_content(text: str, image_keys: list[str], title: str) -> dict[str, Any]:
         content_rows: list[list[dict[str, Any]]] = []
         if text:
+            text = FeishuChannel._wrap_md_tables_in_code_blocks(text)
             content_rows.append([{"tag": "md", "text": text}])
         for image_key in image_keys:
             content_rows.append([{"tag": "img", "image_key": image_key}])
