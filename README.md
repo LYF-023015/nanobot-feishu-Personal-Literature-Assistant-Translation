@@ -9,6 +9,7 @@ A **Feishu-focused** fork of [nanobot](https://github.com/HKUDS/nanobot) — an 
 ## 📢 News
 - **2026-02-10**: First release of the Feishu-focused nanobot fork!
 - **2026-02-24**: Enhance CLI mode with feishu message send support
+- **2026-03-01**: Optimize tool call logging in sessions and add support for the table format contents in feishu message
 
 ## 🌟 What's Changed
 
