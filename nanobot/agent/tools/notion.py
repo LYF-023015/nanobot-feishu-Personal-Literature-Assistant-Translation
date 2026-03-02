@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import re
 from pathlib import Path
@@ -12,6 +13,8 @@ import httpx
 
 from nanobot.agent.tools.base import Tool
 from nanobot.config.schema import NotionToolConfig
+
+logger = logging.getLogger(__name__)
 
 
 _TEXT_EXTENSIONS = {
@@ -30,6 +33,8 @@ _INLINE_PATTERN = re.compile(
     r"|(\*\*[^*]+\*\*)"                        # bold **...**
     r"|(\*[^*]+\*)"                            # italic *...*
 )
+_IMAGE_PATTERN = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".tif", ".tiff", ".bmp", ".ico", ".heic"}
 
 
 class NotionTool(Tool):
@@ -438,7 +443,7 @@ class NotionTool(Tool):
             return children
 
         if file_path.suffix.lower() in {".md", ".markdown"}:
-            children.extend(self._markdown_to_blocks(full_text))
+            children.extend(self._markdown_to_blocks(full_text, base_dir=file_path.parent))
         else:
             children.extend(self._code_blocks_from_text(full_text, language="plain text"))
 
@@ -454,7 +459,7 @@ class NotionTool(Tool):
                 json_body={"children": chunk},
             )
 
-    def _markdown_to_blocks(self, markdown_text: str) -> list[dict[str, Any]]:
+    def _markdown_to_blocks(self, markdown_text: str, base_dir: Path | None = None) -> list[dict[str, Any]]:
         lines = markdown_text.splitlines()
         blocks: list[dict[str, Any]] = []
         paragraph_buffer: list[str] = []
@@ -522,6 +527,22 @@ class NotionTool(Tool):
 
             if not stripped:
                 self._flush_paragraph_buffer(paragraph_buffer, blocks)
+                i += 1
+                continue
+
+            # Image: ![alt](src)
+            img_match = _IMAGE_PATTERN.match(stripped)
+            if img_match:
+                self._flush_paragraph_buffer(paragraph_buffer, blocks)
+                alt_text = img_match.group(1)
+                img_src = img_match.group(2)
+                img_url = self._resolve_image_url(img_src, base_dir)
+                if img_url:
+                    blocks.append(self._image_block(img_url, alt_text))
+                else:
+                    # Fallback: render as text link if image can't be resolved
+                    fallback = f"[Image: {alt_text or img_src}]({img_src})"
+                    blocks.extend(self._text_blocks("paragraph", fallback))
                 i += 1
                 continue
 
@@ -984,3 +1005,82 @@ class NotionTool(Tool):
         if response.text:
             return response.json()
         return {}
+
+    # ── Cloudinary image upload ──────────────────────────────────────
+
+    def _upload_image_to_cloudinary(self, file_path: Path) -> str | None:
+        """Upload a local image to Cloudinary and return its public URL.
+
+        Returns None if Cloudinary is not configured or upload fails.
+        """
+        cfg = self.config.cloudinary
+        if not cfg.enabled:
+            logger.warning("Cloudinary not configured; skipping image upload for %s", file_path)
+            return None
+
+        import requests  # sync is fine here; called during block building
+
+        upload_url = f"https://api.cloudinary.com/v1_1/{cfg.cloud_name}/image/upload"
+
+        try:
+            with open(file_path, "rb") as f:
+                resp = requests.post(
+                    upload_url,
+                    data={"api_key": cfg.api_key},
+                    files={"file": (file_path.name, f)},
+                    auth=(cfg.api_key, cfg.api_secret),
+                    timeout=60,
+                )
+            if resp.status_code == 200:
+                url = resp.json().get("secure_url")
+                logger.info("Uploaded image to Cloudinary: %s → %s", file_path.name, url)
+                return url
+            else:
+                logger.error("Cloudinary upload failed (%s): %s", resp.status_code, resp.text[:300])
+                return None
+        except Exception as e:
+            logger.error("Cloudinary upload error: %s", e)
+            return None
+
+    def _resolve_image_url(self, src: str, base_dir: Path | None = None) -> str | None:
+        """Resolve an image src to a public URL.
+
+        - If src is already an http(s) URL, return as-is.
+        - If src is a local path, upload to Cloudinary and return URL.
+        - Returns None if resolution fails.
+        """
+        if src.startswith("http://") or src.startswith("https://"):
+            return src
+
+        # Resolve relative path against base_dir
+        if base_dir:
+            img_path = (base_dir / src).resolve()
+        else:
+            img_path = Path(src).resolve()
+
+        if not img_path.exists() or not img_path.is_file():
+            logger.warning("Image file not found: %s", img_path)
+            return None
+
+        if img_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+            logger.warning("Unsupported image format: %s", img_path.suffix)
+            return None
+
+        return self._upload_image_to_cloudinary(img_path)
+
+    def _image_block(self, url: str, caption: str = "") -> dict[str, Any]:
+        """Create a Notion image block from an external URL."""
+        block: dict[str, Any] = {
+            "object": "block",
+            "type": "image",
+            "image": {
+                "type": "external",
+                "external": {"url": url},
+            },
+        }
+        if caption:
+            block["image"]["caption"] = [{
+                "type": "text",
+                "text": {"content": caption[:_MAX_RICH_TEXT_CHARS]},
+            }]
+        return block

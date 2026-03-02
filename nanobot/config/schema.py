@@ -129,6 +129,17 @@ class ImageGenConfig(BaseModel):
     timeout: int = 120
 
 
+class CloudinaryConfig(BaseModel):
+    """Cloudinary image hosting configuration."""
+    cloud_name: str = ""
+    api_key: str = ""
+    api_secret: str = ""
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.cloud_name and self.api_key and self.api_secret)
+
+
 class NotionToolConfig(BaseModel):
     """Notion tool configuration."""
     enabled: bool = True
@@ -143,6 +154,7 @@ class NotionToolConfig(BaseModel):
     file_name_property: str = "File Name"
     content_property: str = "Content"
     max_content_chars: int = 4000
+    cloudinary: CloudinaryConfig = Field(default_factory=CloudinaryConfig)
 
 
 class ToolHistoryConfig(BaseModel):
