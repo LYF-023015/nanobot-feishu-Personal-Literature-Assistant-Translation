@@ -10,6 +10,7 @@ A **Feishu-focused** fork of [nanobot](https://github.com/HKUDS/nanobot) — an 
 - **2026-02-10**: First release of the Feishu-focused nanobot fork!
 - **2026-02-24**: Enhance CLI mode with feishu message send support
 - **2026-03-01**: Optimize tool call logging in sessions and add support for the table format contents in feishu message
+- **2026-03-08**: Switch Feishu delivery to interactive card markdown; simplify `message` tool into rich markdown + file modes
 
 ## 🌟 What's Changed
 
@@ -51,11 +52,13 @@ This allows the agent to maintain multiple parallel conversation contexts per us
 
 The original Feishu channel implementation has been significantly upgraded:
 
-- **Markdown-based messages**: Bot responses are now sent as rich-text **post** messages using Feishu's `md` tag, providing a more visually appealing and structured output
+- **Interactive card messages**: Bot responses are now sent as Feishu `interactive` template cards (instead of `post`), with markdown content injected into template variable `content`
+- **Markdown rich content support**: Plain text, images, and mixed text+image content are all sent through markdown content in card messages
+- **Markdown local image auto-upload**: For markdown image syntax like `![alt](/abs/path/to/image.png)`, local images are uploaded first and links are replaced with Feishu `image_key`
+- **Absolute path requirement for markdown images**: Local markdown image links should use absolute paths to avoid key-resolution errors
 - **Image receiving**: The bot can receive image messages from users — images are automatically downloaded via the Feishu API and saved to a configurable media directory
-- **Image sending**: Supports uploading and sending images as rich post messages with titles
+- **Image sending (standalone)**: Existing standalone `image` message sending is retained for compatibility
 - **File sending**: Supports uploading and sending files (PDF, DOCX, XLSX, PPTX, etc.) as file messages, with a 30MB size limit
-- **Multi-media in a single message**: Text, images, and files can be combined in a single outbound message
 - **Reaction feedback**: Automatically adds a thumbs-up reaction to received messages as a "seen" indicator
 
 ### 5. 🔍 Transparent Tool-Call Notifications
@@ -127,7 +130,9 @@ Then edit the config file inside that directory, for example `/data/home/scwb307
       "appSecret": "xxx",
       "encryptKey": "",
       "verificationToken": "",
-      "allowFrom": []
+      "allowFrom": [],
+      "cardTemplateId": "AAqK6dMNHUVKE",
+      "cardTemplateVersionName": "1.0.0"
     }
   },
   "tools": {
@@ -233,6 +238,24 @@ Config file: `~/.nanobot/config.json` by default, or `$NANOBOT_HOME/config.json`
 | `verificationToken` | Verification Token (optional for WebSocket mode) |
 | `allowFrom` | Allowed user `open_id` list; empty = allow all |
 | `mediaDir` | Directory to save received media (default: `~/.nanobot/media`, or `$NANOBOT_HOME/media` when set) |
+| `cardTemplateId` | Feishu card template ID for interactive messages (default: `AAqK6dMNHUVKE`) |
+| `cardTemplateVersionName` | Feishu card template version (default: `1.0.0`) |
+
+### 📨 Message Tool Usage (Updated)
+
+`message` tool is simplified into two message categories:
+
+1. **Rich markdown content**
+- Use `content` to send plain text, image-only, or mixed text+image messages.
+- Images in markdown should use absolute local paths:
+  - `![xxxxxx](/data/.../images/fig1_nat.png)`
+
+2. **File messages**
+- Keep using existing file parameters (`file_path`, `file_base64`) or non-image entries in `media`.
+
+Notes:
+- Local markdown images are auto-uploaded and replaced with Feishu `image_key` at send time.
+- Existing standalone image sending logic is preserved for compatibility.
 
 <details>
 <summary><b>Full config example</b></summary>
@@ -260,7 +283,9 @@ Config file: `~/.nanobot/config.json` by default, or `$NANOBOT_HOME/config.json`
       "appSecret": "xxx",
       "encryptKey": "",
       "verificationToken": "",
-      "allowFrom": []
+      "allowFrom": [],
+      "cardTemplateId": "AAqK6dMNHUVKE",
+      "cardTemplateVersionName": "1.0.0"
     }
   },
   "tools": {
@@ -343,7 +368,7 @@ nanobot/
 │       ├── filesystem.py #     File read/write/edit/list
 │       ├── shell.py      #     Shell command execution
 │       ├── web.py        #     Web search & fetch
-│       ├── message.py    #     Message sending (text, image, file)
+│       ├── message.py    #     Message sending (rich markdown + file)
 │       ├── pdf_mineru.py #     ★ PDF parsing via MinerU API
 │       ├── image_generate.py # ★ Image generation & Feishu delivery
 │       ├── session_manage.py # ★ Session create/switch/reset
@@ -351,7 +376,7 @@ nanobot/
 │       └── cron.py       #     Cron task management
 ├── channels/             # Chat channel integrations
 │   ├── base.py           #   Base channel interface
-│   ├── feishu.py         #   ★ Enhanced Feishu (markdown, image, file)
+│   ├── feishu.py         #   ★ Enhanced Feishu (interactive markdown card, image, file)
 │   ├── telegram.py       #   Telegram
 │   ├── discord.py        #   Discord
 │   └── whatsapp.py       #   WhatsApp
