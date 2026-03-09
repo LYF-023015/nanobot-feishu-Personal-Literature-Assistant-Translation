@@ -1,5 +1,6 @@
 """LiteLLM provider implementation for multi-provider support."""
 
+import json
 import os
 from typing import Any
 
@@ -166,11 +167,20 @@ class LiteLLMProvider(LLMProvider):
                 # Parse arguments from JSON string if needed
                 args = tc.function.arguments
                 if isinstance(args, str):
-                    import json
                     try:
                         args = json.loads(args)
-                    except json.JSONDecodeError:
-                        args = {"raw": args}
+                    except json.JSONDecodeError as e:
+                        args = {
+                            "__nanobot_tool_args_error__": "json_decode_error",
+                            "__nanobot_tool_args_error_msg__": str(e),
+                            "__nanobot_tool_args_raw__": args[:2000],
+                        }
+                if not isinstance(args, dict):
+                    args = {
+                        "__nanobot_tool_args_error__": "non_object_arguments",
+                        "__nanobot_tool_args_error_msg__": f"arguments must be a JSON object, got {type(args).__name__}",
+                        "__nanobot_tool_args_raw__": str(args)[:2000],
+                    }
                 
                 tool_calls.append(ToolCallRequest(
                     id=tc.id,

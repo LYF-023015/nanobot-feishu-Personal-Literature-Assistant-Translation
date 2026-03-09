@@ -53,9 +53,31 @@ class ToolRegistry:
         if not tool:
             return f"Error: Tool '{name}' not found"
 
+        if not isinstance(params, dict):
+            return (
+                f"Error: Invalid parameters for tool '{name}': arguments must be an object. "
+                "This may happen when tool-call arguments are truncated. "
+                "Please retry with shorter content or split the task into smaller tool calls."
+            )
+
+        parse_error = params.get("__nanobot_tool_args_error__")
+        if parse_error:
+            detail = params.get("__nanobot_tool_args_error_msg__", "unknown parse error")
+            return (
+                f"Error: Tool-call arguments for '{name}' could not be parsed ({detail}). "
+                "This usually means the arguments were truncated. "
+                "Please reduce argument size and retry. For long file output, use write_file for the first chunk and append_file for subsequent chunks."
+            )
+
         try:
             errors = tool.validate_params(params)
             if errors:
+                if name in {"write_file", "append_file"} and "missing required content" in "; ".join(errors):
+                    return (
+                        f"Error: Invalid parameters for tool '{name}': missing required content. "
+                        "This often indicates argument truncation. Please shorten each content chunk and retry; "
+                        "for large files, write in multiple append_file chunks."
+                    )
                 return f"Error: Invalid parameters for tool '{name}': " + "; ".join(errors)
             return await tool.execute(**params)
         except Exception as e:

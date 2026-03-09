@@ -1,6 +1,7 @@
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.filesystem import AppendFileTool, WriteFileTool
 from nanobot.agent.tools.registry import ToolRegistry
 
 
@@ -86,3 +87,35 @@ async def test_registry_returns_validation_error() -> None:
     reg.register(SampleTool())
     result = await reg.execute("sample", {"query": "hi"})
     assert "Invalid parameters" in result
+
+
+async def test_registry_reports_tool_args_parse_error() -> None:
+    reg = ToolRegistry()
+    reg.register(WriteFileTool())
+    result = await reg.execute(
+        "write_file",
+        {
+            "__nanobot_tool_args_error__": "json_decode_error",
+            "__nanobot_tool_args_error_msg__": "Expecting ',' delimiter",
+        },
+    )
+    assert "truncated" in result
+    assert "append_file" in result
+
+
+async def test_write_file_missing_content_has_chunk_hint() -> None:
+    reg = ToolRegistry()
+    reg.register(WriteFileTool())
+    result = await reg.execute("write_file", {"path": "/tmp/demo.txt"})
+    assert "missing required content" in result
+    assert "truncation" in result
+
+
+async def test_append_file_supports_chunked_write(tmp_path) -> None:
+    tool = AppendFileTool()
+    file_path = tmp_path / "chunked.txt"
+    result1 = await tool.execute(path=str(file_path), content="hello")
+    result2 = await tool.execute(path=str(file_path), content=" world")
+    assert "Successfully appended" in result1
+    assert "Successfully appended" in result2
+    assert file_path.read_text(encoding="utf-8") == "hello world"

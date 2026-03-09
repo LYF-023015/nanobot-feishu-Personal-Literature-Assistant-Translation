@@ -6,6 +6,9 @@ from typing import Any
 from nanobot.agent.tools.base import Tool
 
 
+MAX_TEXT_WRITE_CHARS = 50_000
+
+
 def _resolve_path(path: str, allowed_dir: Path | None = None) -> Path:
     """Resolve path and optionally enforce directory restriction."""
     resolved = Path(path).expanduser().resolve()
@@ -69,7 +72,10 @@ class WriteFileTool(Tool):
     
     @property
     def description(self) -> str:
-        return "Write content to a file at the given path. Creates parent directories if needed. Remember to include 'content' parameter when calling this tool."
+        return (
+            "Write content to a file at the given path. Creates parent directories if needed. "
+            "Remember to include 'content'. If content is large, split into chunks and use append_file."
+        )
     
     @property
     def parameters(self) -> dict[str, Any]:
@@ -82,7 +88,8 @@ class WriteFileTool(Tool):
                 },
                 "content": {
                     "type": "string",
-                    "description": "The content to write"
+                    "description": "The content to write",
+                    "maxLength": MAX_TEXT_WRITE_CHARS,
                 }
             },
             "required": ["path", "content"]
@@ -90,7 +97,16 @@ class WriteFileTool(Tool):
     
     async def execute(self, path: str, content: str | None = None, **kwargs: Any) -> str:
         if content is None:
-            return "Error: 'content' parameter is required, but was not provided."
+            return (
+                "Error: 'content' parameter is required for write_file but was not provided. "
+                "This can happen when tool arguments are truncated. "
+                "Please retry with shorter content or write in chunks using append_file."
+            )
+        if len(content) > MAX_TEXT_WRITE_CHARS:
+            return (
+                f"Error: content too large for write_file ({len(content)} chars, max {MAX_TEXT_WRITE_CHARS}). "
+                "Please split content into smaller chunks and use append_file."
+            )
         try:
             file_path = _resolve_path(path, self._allowed_dir)
             file_path.parent.mkdir(parents=True, exist_ok=True)
@@ -100,6 +116,64 @@ class WriteFileTool(Tool):
             return f"Error: {e}"
         except Exception as e:
             return f"Error writing file: {str(e)}"
+
+
+class AppendFileTool(Tool):
+    """Tool to append content to a file."""
+
+    def __init__(self, allowed_dir: Path | None = None):
+        self._allowed_dir = allowed_dir
+
+    @property
+    def name(self) -> str:
+        return "append_file"
+
+    @property
+    def description(self) -> str:
+        return (
+            "Append content to a file at the given path. Creates parent directories when missing. "
+            "Use this tool for chunked writes when content is too long for write_file."
+        )
+
+    @property
+    def parameters(self) -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The file path to append to"
+                },
+                "content": {
+                    "type": "string",
+                    "description": "The content chunk to append",
+                    "maxLength": MAX_TEXT_WRITE_CHARS,
+                }
+            },
+            "required": ["path", "content"]
+        }
+
+    async def execute(self, path: str, content: str | None = None, **kwargs: Any) -> str:
+        if content is None:
+            return (
+                "Error: 'content' parameter is required for append_file but was not provided. "
+                "Please send smaller chunks."
+            )
+        if len(content) > MAX_TEXT_WRITE_CHARS:
+            return (
+                f"Error: content chunk too large for append_file ({len(content)} chars, max {MAX_TEXT_WRITE_CHARS}). "
+                "Please split into smaller chunks."
+            )
+        try:
+            file_path = _resolve_path(path, self._allowed_dir)
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            with file_path.open("a", encoding="utf-8") as f:
+                f.write(content)
+            return f"Successfully appended {len(content)} bytes to {path}"
+        except PermissionError as e:
+            return f"Error: {e}"
+        except Exception as e:
+            return f"Error appending file: {str(e)}"
 
 
 class EditFileTool(Tool):
