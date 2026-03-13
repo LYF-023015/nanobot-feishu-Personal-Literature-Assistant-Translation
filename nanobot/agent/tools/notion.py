@@ -78,6 +78,11 @@ class NotionTool(Tool):
                 "doc_type": {
                     "type": "string",
                     "description": "Dataset type label for upload/reclassify/inspect/list. Supports custom types (e.g. log). Use 'auto' for inference.",
+                    "enum":[
+                        "auto",
+                        "reports",
+                        "notes",
+                    ],
                     "default": "auto",
                 },
                 "title": {
