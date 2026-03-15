@@ -12,10 +12,11 @@ from nanobot.bus.events import InboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.tools.registry import ToolRegistry
-from nanobot.agent.tools.filesystem import AppendFileTool, ListDirTool, ReadFileTool, WriteFileTool
+from nanobot.agent.tools.filesystem import AppendFileTool, EditFileTool, ListDirTool, ReadFileTool, WriteFileTool
 from nanobot.agent.tools.shell import ExecTool
 from nanobot.agent.tools.web import WebSearchTool, WebFetchTool
 from nanobot.agent.tools.notion import NotionTool
+from nanobot.agent.tools.image_generate import ImageGenerateTool
 
 
 class SubagentManager:
@@ -37,12 +38,16 @@ class SubagentManager:
         exec_config: "ExecToolConfig | None" = None,
         mineru_config: "MineruConfig | None" = None,
         notion_config: "NotionToolConfig | None" = None,
+        image_gen_config: "ImageGenConfig | None" = None,
+        feishu_config: "FeishuConfig | None" = None,
         restrict_to_workspace: bool = False,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.config.schema import MineruConfig
         from nanobot.config.schema import NotionToolConfig
         from nanobot.config.schema import WebSearchConfig
+        from nanobot.config.schema import ImageGenConfig
+        from nanobot.config.schema import FeishuConfig
         self.provider = provider
         self.workspace = workspace
         self.bus = bus
@@ -51,6 +56,8 @@ class SubagentManager:
         self.exec_config = exec_config or ExecToolConfig()
         self.mineru_config = mineru_config or MineruConfig()
         self.notion_config = notion_config or NotionToolConfig()
+        self.image_gen_config = image_gen_config or ImageGenConfig()
+        self.feishu_config = feishu_config or FeishuConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
     
@@ -110,6 +117,7 @@ class SubagentManager:
             tools.register(ReadFileTool(allowed_dir=allowed_dir))
             tools.register(WriteFileTool(allowed_dir=allowed_dir))
             tools.register(AppendFileTool(allowed_dir=allowed_dir))
+            tools.register(EditFileTool(allowed_dir=allowed_dir))
             tools.register(ListDirTool(allowed_dir=allowed_dir))
             tools.register(ExecTool(
                 working_dir=str(self.workspace),
@@ -140,6 +148,14 @@ class SubagentManager:
                     config=self.mineru_config,
                     allowed_dir=allowed_dir,
                 ))
+
+            # Image generation tool
+            tools.register(ImageGenerateTool(
+                config=self.image_gen_config,
+                feishu_config=self.feishu_config,
+                workspace=self.workspace,
+                allowed_dir=allowed_dir,
+            ))
             
             # Build messages with subagent-specific prompt
             system_prompt = self._build_subagent_prompt(task)

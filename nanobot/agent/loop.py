@@ -110,6 +110,8 @@ class AgentLoop:
             exec_config=self.exec_config,
             mineru_config=self.mineru_config,
             notion_config=self.notion_config,
+            image_gen_config=self.image_gen_config,
+            feishu_config=self.feishu_config,
             restrict_to_workspace=restrict_to_workspace,
         )
         
