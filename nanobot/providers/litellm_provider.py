@@ -5,6 +5,7 @@ import os
 from typing import Any
 
 import litellm
+import httpx
 from litellm import acompletion
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
@@ -83,6 +84,7 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        reasoning_effort: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -93,6 +95,7 @@ class LiteLLMProvider(LLMProvider):
             model: Model identifier (e.g., 'anthropic/claude-sonnet-4-5').
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            reasoning_effort: Optional reasoning mode hint for supported models.
         
         Returns:
             LLMResponse with content and/or tool calls.
@@ -131,6 +134,11 @@ class LiteLLMProvider(LLMProvider):
         if "kimi-k2.5" in model.lower():
             temperature = 1.0
 
+        # gpt-5 family models reject non-1.0 temperatures in LiteLLM/OpenAI-compatible
+        # routes, so normalize them here instead of surfacing a provider error.
+        if "gpt-5" in model.lower() and temperature != 1.0:
+            temperature = 1.0
+
         kwargs: dict[str, Any] = {
             "model": model,
             "messages": messages,
@@ -145,16 +153,130 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
+
+        if reasoning_effort is not None and self._supports_reasoning_effort(model):
+            kwargs["reasoning_effort"] = reasoning_effort
         
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
         except Exception as e:
+            if tools and self._should_retry_without_tool_choice(e):
+                retry_kwargs = dict(kwargs)
+                retry_kwargs.pop("tool_choice", None)
+                try:
+                    response = await acompletion(**retry_kwargs)
+                    return self._parse_response(response)
+                except Exception as retry_error:
+                    return LLMResponse(
+                        content=f"Error calling LLM: {str(retry_error)}",
+                        finish_reason="error",
+                    )
+            if self.api_base and self._should_fallback_to_raw_http(e):
+                try:
+                    return await self._chat_via_raw_openai_compatible_api(kwargs)
+                except Exception as raw_error:
+                    return LLMResponse(
+                        content=f"Error calling LLM: {str(raw_error)}",
+                        finish_reason="error",
+                    )
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
+
+    def _should_retry_without_tool_choice(self, error: Exception) -> bool:
+        message = str(error).lower()
+        return "tool_choice" in message and (
+            "unsupported" in message or "does not support" in message
+        )
+
+    def _supports_reasoning_effort(self, model: str) -> bool:
+        return "gpt-5" in model.lower()
+
+    def _should_fallback_to_raw_http(self, error: Exception) -> bool:
+        message = str(error).lower()
+        return (
+            self.api_base is not None
+            and "invalid response object" in message
+        )
+
+    async def _chat_via_raw_openai_compatible_api(self, kwargs: dict[str, Any]) -> LLMResponse:
+        payload = {
+            "model": kwargs["model"],
+            "messages": kwargs["messages"],
+            "max_tokens": kwargs["max_tokens"],
+            "temperature": kwargs["temperature"],
+        }
+
+        for key in ("tools", "tool_choice", "reasoning_effort"):
+            if key in kwargs:
+                payload[key] = kwargs[key]
+
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        base_url = self.api_base.rstrip("/") if self.api_base else ""
+        url = f"{base_url}/chat/completions"
+
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+            return self._parse_openai_compatible_response(response.json())
+
+    def _parse_openai_compatible_response(self, data: dict[str, Any]) -> LLMResponse:
+        choices = data.get("choices") or []
+        if not choices:
+            return LLMResponse(content="", finish_reason="error")
+
+        choice = choices[0] or {}
+        message = choice.get("message") or {}
+        tool_calls = []
+
+        for tc in message.get("tool_calls") or []:
+            function = tc.get("function") or {}
+            args = function.get("arguments")
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except json.JSONDecodeError as e:
+                    args = {
+                        "__nanobot_tool_args_error__": "json_decode_error",
+                        "__nanobot_tool_args_error_msg__": str(e),
+                        "__nanobot_tool_args_raw__": args[:2000],
+                    }
+            if not isinstance(args, dict):
+                args = {
+                    "__nanobot_tool_args_error__": "non_object_arguments",
+                    "__nanobot_tool_args_error_msg__": f"arguments must be a JSON object, got {type(args).__name__}",
+                    "__nanobot_tool_args_raw__": str(args)[:2000],
+                }
+
+            tool_calls.append(ToolCallRequest(
+                id=tc.get("id", ""),
+                name=function.get("name", ""),
+                arguments=args,
+            ))
+
+        finish_reason = choice.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
+
+        usage = {}
+        usage_data = data.get("usage") or {}
+        if usage_data:
+            usage = {
+                "prompt_tokens": usage_data.get("prompt_tokens", 0),
+                "completion_tokens": usage_data.get("completion_tokens", 0),
+                "total_tokens": usage_data.get("total_tokens", 0),
+            }
+
+        return LLMResponse(
+            content=message.get("content"),
+            tool_calls=tool_calls,
+            finish_reason=finish_reason,
+            usage=usage,
+        )
     
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""

@@ -34,6 +34,7 @@ class SubagentManager:
         workspace: Path,
         bus: MessageBus,
         model: str | None = None,
+        reasoning_effort: str | None = None,
         web_search_config: "WebSearchConfig | None" = None,
         exec_config: "ExecToolConfig | None" = None,
         mineru_config: "MineruConfig | None" = None,
@@ -52,6 +53,7 @@ class SubagentManager:
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
+        self.reasoning_effort = reasoning_effort
         self.web_search_config = web_search_config or WebSearchConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.mineru_config = mineru_config or MineruConfig()
@@ -176,6 +178,7 @@ class SubagentManager:
                     messages=messages,
                     tools=tools.get_definitions(),
                     model=self.model,
+                    reasoning_effort=self.reasoning_effort,
                 )
                 
                 if response.has_tool_calls:

@@ -65,6 +65,7 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 30,
+        reasoning_effort: str | None = None,
         web_search_config: WebSearchConfig | None = None,
         exec_config: ExecToolConfig | None = None,
         mineru_config: MineruConfig | None = None,
@@ -88,6 +89,7 @@ class AgentLoop:
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
+        self.reasoning_effort = reasoning_effort
         self.web_search_config = web_search_config or WebSearchConfig()
         self.exec_config = exec_config or ExecToolConfig()
         self.mineru_config = mineru_config or MineruConfig()
@@ -106,6 +108,7 @@ class AgentLoop:
             workspace=workspace,
             bus=bus,
             model=self.model,
+            reasoning_effort=self.reasoning_effort,
             web_search_config=self.web_search_config,
             exec_config=self.exec_config,
             mineru_config=self.mineru_config,
@@ -295,7 +298,8 @@ class AgentLoop:
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
             )
             
             # Handle tool calls
@@ -430,7 +434,8 @@ class AgentLoop:
             response = await self.provider.chat(
                 messages=messages,
                 tools=self.tools.get_definitions(),
-                model=self.model
+                model=self.model,
+                reasoning_effort=self.reasoning_effort,
             )
             
             if response.has_tool_calls:
