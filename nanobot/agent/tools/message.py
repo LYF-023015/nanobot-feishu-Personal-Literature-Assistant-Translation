@@ -25,6 +25,7 @@ class MessageTool(Tool):
         self._send_callback = send_callback
         self._default_channel = default_channel
         self._default_chat_id = default_chat_id
+        self._token_monitor_factory: Callable[[], dict[str, Any] | None] | None = None
     
     def set_context(self, channel: str, chat_id: str) -> None:
         """Set the current message context."""
@@ -34,6 +35,13 @@ class MessageTool(Tool):
     def set_send_callback(self, callback: Callable[[OutboundMessage], Awaitable[None]]) -> None:
         """Set the callback for sending messages."""
         self._send_callback = callback
+
+    def set_token_monitor_factory(
+        self,
+        factory: Callable[[], dict[str, Any] | None] | None,
+    ) -> None:
+        """Set an optional factory that provides real-time token monitor metadata."""
+        self._token_monitor_factory = factory
     
     @property
     def name(self) -> str:
@@ -172,6 +180,11 @@ class MessageTool(Tool):
         metadata: dict[str, Any] = {}
         if title:
             metadata["title"] = title
+
+        if self._token_monitor_factory:
+            token_monitor = self._token_monitor_factory()
+            if isinstance(token_monitor, dict):
+                metadata["token_monitor"] = token_monitor
 
         msg = OutboundMessage(
             channel=channel,

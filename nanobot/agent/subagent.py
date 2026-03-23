@@ -34,6 +34,7 @@ class SubagentManager:
         workspace: Path,
         bus: MessageBus,
         model: str | None = None,
+        max_tokens: int = 4096,
         reasoning_effort: str | None = None,
         web_search_config: "WebSearchConfig | None" = None,
         exec_config: "ExecToolConfig | None" = None,
@@ -53,6 +54,7 @@ class SubagentManager:
         self.workspace = workspace
         self.bus = bus
         self.model = model or provider.get_default_model()
+        self.max_tokens = max(1, int(max_tokens))
         self.reasoning_effort = reasoning_effort
         self.web_search_config = web_search_config or WebSearchConfig()
         self.exec_config = exec_config or ExecToolConfig()
@@ -62,6 +64,24 @@ class SubagentManager:
         self.feishu_config = feishu_config or FeishuConfig()
         self.restrict_to_workspace = restrict_to_workspace
         self._running_tasks: dict[str, asyncio.Task[None]] = {}
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            if value is None:
+                return 0
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _accumulate_usage(cls, target: dict[str, int], usage: dict[str, Any] | None) -> None:
+        if not usage:
+            return
+        target["prompt_tokens"] += cls._safe_int(usage.get("prompt_tokens"))
+        target["completion_tokens"] += cls._safe_int(usage.get("completion_tokens"))
+        target["total_tokens"] += cls._safe_int(usage.get("total_tokens"))
+        target["cache_tokens"] += cls._safe_int(usage.get("cache_tokens"))
     
     async def spawn(
         self,
@@ -170,6 +190,12 @@ class SubagentManager:
             max_iterations = 50
             iteration = 0
             final_result: str | None = None
+            task_usage = {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cache_tokens": 0,
+            }
             
             while iteration < max_iterations:
                 iteration += 1
@@ -178,8 +204,10 @@ class SubagentManager:
                     messages=messages,
                     tools=tools.get_definitions(),
                     model=self.model,
+                    max_tokens=self.max_tokens,
                     reasoning_effort=self.reasoning_effort,
                 )
+                self._accumulate_usage(task_usage, response.usage)
                 
                 if response.has_tool_calls:
                     # Add assistant message with tool calls
@@ -219,12 +247,25 @@ class SubagentManager:
                 final_result = "Task completed but no final response was generated."
             
             logger.info(f"Subagent [{task_id}] completed successfully")
-            await self._announce_result(task_id, label, task, final_result, origin, "ok")
+            await self._announce_result(task_id, label, task, final_result, origin, "ok", task_usage)
             
         except Exception as e:
             error_msg = f"Error: {str(e)}"
             logger.error(f"Subagent [{task_id}] failed: {e}")
-            await self._announce_result(task_id, label, task, error_msg, origin, "error")
+            await self._announce_result(
+                task_id,
+                label,
+                task,
+                error_msg,
+                origin,
+                "error",
+                {
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "cache_tokens": 0,
+                },
+            )
     
     async def _announce_result(
         self,
@@ -234,6 +275,7 @@ class SubagentManager:
         result: str,
         origin: dict[str, str],
         status: str,
+        usage: dict[str, int],
     ) -> None:
         """Announce the subagent result to the main agent via the message bus."""
         status_text = "completed successfully" if status == "ok" else "failed"
@@ -253,6 +295,7 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
             sender_id="subagent",
             chat_id=f"{origin['channel']}:{origin['chat_id']}",
             content=announce_content,
+            metadata={"subagent_usage": usage},
         )
         
         await self.bus.publish_inbound(msg)

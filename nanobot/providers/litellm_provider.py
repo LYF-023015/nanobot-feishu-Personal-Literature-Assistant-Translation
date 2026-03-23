@@ -262,14 +262,7 @@ class LiteLLMProvider(LLMProvider):
 
         finish_reason = choice.get("finish_reason") or ("tool_calls" if tool_calls else "stop")
 
-        usage = {}
-        usage_data = data.get("usage") or {}
-        if usage_data:
-            usage = {
-                "prompt_tokens": usage_data.get("prompt_tokens", 0),
-                "completion_tokens": usage_data.get("completion_tokens", 0),
-                "total_tokens": usage_data.get("total_tokens", 0),
-            }
+        usage = self._extract_usage(data.get("usage") or {})
 
         return LLMResponse(
             content=message.get("content"),
@@ -310,13 +303,7 @@ class LiteLLMProvider(LLMProvider):
                     arguments=args,
                 ))
         
-        usage = {}
-        if hasattr(response, "usage") and response.usage:
-            usage = {
-                "prompt_tokens": response.usage.prompt_tokens,
-                "completion_tokens": response.usage.completion_tokens,
-                "total_tokens": response.usage.total_tokens,
-            }
+        usage = self._extract_usage(getattr(response, "usage", None))
         
         return LLMResponse(
             content=message.content,
@@ -328,3 +315,62 @@ class LiteLLMProvider(LLMProvider):
     def get_default_model(self) -> str:
         """Get the default model."""
         return self.default_model
+
+    @staticmethod
+    def _to_int(value: Any) -> int:
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, bool):
+                return 0
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _get_usage_attr(usage: Any, key: str, default: Any = 0) -> Any:
+        if usage is None:
+            return default
+        if isinstance(usage, dict):
+            return usage.get(key, default)
+        return getattr(usage, key, default)
+
+    def _extract_usage(self, usage: Any) -> dict[str, int]:
+        if not usage:
+            return {}
+
+        prompt_tokens = self._to_int(self._get_usage_attr(usage, "prompt_tokens", 0))
+        completion_tokens = self._to_int(self._get_usage_attr(usage, "completion_tokens", 0))
+        total_tokens = self._to_int(self._get_usage_attr(usage, "total_tokens", 0))
+
+        cache_tokens = 0
+        prompt_details = self._get_usage_attr(usage, "prompt_tokens_details", {})
+        cache_tokens = self._to_int(self._get_usage_attr(prompt_details, "cached_tokens", 0))
+
+        if cache_tokens <= 0:
+            for key in (
+                "prompt_cache_hit_tokens",
+                "cache_read_input_tokens",
+                "cached_prompt_tokens",
+                "input_cached_tokens",
+            ):
+                value = self._to_int(self._get_usage_attr(usage, key, 0))
+                if value > 0:
+                    cache_tokens = value
+                    break
+
+        # Some providers expose a generic `cache_tokens` field with ambiguous meaning.
+        # Only use it as a fallback and clamp to prompt_tokens to avoid impossible splits.
+        if cache_tokens <= 0:
+            generic_cache = self._to_int(self._get_usage_attr(usage, "cache_tokens", 0))
+            if 0 < generic_cache <= prompt_tokens:
+                cache_tokens = generic_cache
+
+        cache_tokens = min(cache_tokens, prompt_tokens)
+
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cache_tokens": cache_tokens,
+        }

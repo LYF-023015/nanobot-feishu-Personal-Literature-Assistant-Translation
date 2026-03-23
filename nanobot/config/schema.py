@@ -1,6 +1,7 @@
 """Configuration schema using Pydantic."""
 
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings
 
@@ -57,6 +58,9 @@ class AgentDefaults(BaseModel):
     workspace: str = Field(default_factory=lambda: str(get_workspace_path()))
     model: str = "anthropic/claude-opus-4-5"
     max_tokens: int = 8192
+    context_window_tokens: int | None = None
+    token_budget_mode: Literal["output", "context"] = "output"
+    merge_subagent_usage: bool = True
     temperature: float = 0.7
     reasoning_effort: str | None = None
     max_tool_iterations: int = 20

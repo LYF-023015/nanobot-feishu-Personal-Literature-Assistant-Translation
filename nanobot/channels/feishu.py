@@ -212,6 +212,7 @@ class FeishuChannel(BaseChannel):
                     card_text,
                     template_id=template_id,
                     template_version_name=template_version_name,
+                    token_monitor=msg.metadata.get("token_monitor") if isinstance(msg.metadata, dict) else None,
                 )
 
                 request = CreateMessageRequest.builder() \
@@ -430,15 +431,43 @@ class FeishuChannel(BaseChannel):
         text: str,
         template_id: str,
         template_version_name: str,
+        token_monitor: dict[str, Any] | None = None,
     ) -> str:
+        default_chart = {
+            "type": "bar",
+            "direction": "horizontal",
+            "title": {"text": "token用量占比图"},
+            "data": {
+                "values": [
+                    {"category": "token用量", "item": "input_cached", "value": 0},
+                    {"category": "token用量", "item": "input_uncached", "value": 0},
+                    {"category": "token用量", "item": "output", "value": 0},
+                    {"category": "token用量", "item": "sum_tokens", "value": 0},
+                ]
+            },
+            "xField": "value",
+            "yField": "category",
+            "seriesField": "item",
+            "stack": True,
+            "legends": {"visible": True, "orient": "bottom"},
+            "label": {"visible": True, "formatter": "value"},
+        }
+
+        chart = default_chart
+        if isinstance(token_monitor, dict) and isinstance(token_monitor.get("chart"), dict):
+            chart = token_monitor["chart"]
+
+        template_variable: dict[str, Any] = {
+            "content": text,
+            "token_budget": chart,
+        }
+
         payload = {
             "type": "template",
             "data": {
                 "template_id": template_id,
                 "template_version_name": template_version_name,
-                "template_variable": {
-                    "content": text,
-                },
+                "template_variable": template_variable,
             },
         }
         return json.dumps(payload, ensure_ascii=False)

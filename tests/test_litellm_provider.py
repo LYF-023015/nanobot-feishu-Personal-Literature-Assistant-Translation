@@ -201,3 +201,50 @@ async def test_chat_falls_back_to_raw_http_when_litellm_response_is_invalid(monk
     assert response.content == "ok"
     assert response.has_tool_calls
     assert response.finish_reason == "tool_calls"
+
+
+def test_parse_openai_compatible_response_extracts_cache_tokens() -> None:
+    provider = LiteLLMProvider(api_key="test-key", api_base="https://example.invalid/v1")
+    response = provider._parse_openai_compatible_response(
+        {
+            "choices": [
+                {
+                    "message": {"content": "ok", "tool_calls": []},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 6,
+                "total_tokens": 16,
+                "cache_read_input_tokens": 4,
+            },
+        }
+    )
+    assert response.usage["prompt_tokens"] == 10
+    assert response.usage["completion_tokens"] == 6
+    assert response.usage["total_tokens"] == 16
+    assert response.usage["cache_tokens"] == 4
+
+
+def test_parse_openai_compatible_response_extracts_nested_cached_tokens() -> None:
+    provider = LiteLLMProvider(api_key="test-key", api_base="https://example.invalid/v1")
+    response = provider._parse_openai_compatible_response(
+        {
+            "choices": [
+                {
+                    "message": {"content": "ok", "tool_calls": []},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 20,
+                "completion_tokens": 8,
+                "total_tokens": 28,
+                "prompt_tokens_details": {
+                    "cached_tokens": 9,
+                },
+            },
+        }
+    )
+    assert response.usage["cache_tokens"] == 9

@@ -66,6 +66,10 @@ class AgentLoop:
         provider: LLMProvider,
         workspace: Path,
         model: str | None = None,
+        max_tokens: int = 4096,
+        context_window_tokens: int | None = None,
+        token_budget_mode: str = "output",
+        merge_subagent_usage: bool = True,
         max_iterations: int = 30,
         reasoning_effort: str | None = None,
         web_search_config: WebSearchConfig | None = None,
@@ -92,6 +96,10 @@ class AgentLoop:
         self.provider = provider
         self.workspace = workspace
         self.model = model or provider.get_default_model()
+        self.max_tokens = max(1, int(max_tokens))
+        self.context_window_tokens = self._safe_int(context_window_tokens)
+        self.token_budget_mode = token_budget_mode if token_budget_mode in {"output", "context"} else "output"
+        self.merge_subagent_usage = merge_subagent_usage
         self.max_iterations = max_iterations
         self.reasoning_effort = reasoning_effort
         self.web_search_config = web_search_config or WebSearchConfig()
@@ -119,6 +127,7 @@ class AgentLoop:
             workspace=workspace,
             bus=bus,
             model=self.model,
+            max_tokens=self.max_tokens,
             reasoning_effort=self.reasoning_effort,
             web_search_config=self.web_search_config,
             exec_config=self.exec_config,
@@ -165,6 +174,125 @@ class AgentLoop:
         if session_summary:
             return max(self._history_postcompress_max_messages, active_floor)
         return max(self._history_precompress_max_messages, active_floor)
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            if value is None:
+                return 0
+            if isinstance(value, bool):
+                return 0
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @classmethod
+    def _accumulate_usage(cls, target: dict[str, int], usage: dict[str, Any] | None) -> None:
+        if not usage:
+            return
+        target["prompt_tokens"] += cls._safe_int(usage.get("prompt_tokens"))
+        target["completion_tokens"] += cls._safe_int(usage.get("completion_tokens"))
+        target["total_tokens"] += cls._safe_int(usage.get("total_tokens"))
+        target["cache_tokens"] += cls._safe_int(usage.get("cache_tokens"))
+
+    @classmethod
+    def _build_token_monitor(
+        cls,
+        usage: dict[str, int],
+        output_budget_tokens: int,
+        context_window_tokens: int = 0,
+        token_budget_mode: str = "output",
+    ) -> dict[str, Any]:
+        input_tokens = cls._safe_int(usage.get("prompt_tokens"))
+        output_tokens = cls._safe_int(usage.get("completion_tokens"))
+        cache_tokens = cls._safe_int(usage.get("cache_tokens"))
+        total_tokens = cls._safe_int(usage.get("total_tokens"))
+
+        input_cached_tokens = min(input_tokens, cache_tokens)
+        input_uncached_tokens = max(0, input_tokens - input_cached_tokens)
+        sum_tokens = input_tokens + output_tokens
+
+        output_budget = max(1, cls._safe_int(output_budget_tokens))
+        output_used = output_tokens
+        output_raw_residue = output_budget - output_used
+        output_residue = max(0, output_raw_residue)
+        output_ratio = min(1.0, output_used / output_budget)
+
+        has_context_budget = cls._safe_int(context_window_tokens) > 0
+        context_budget = cls._safe_int(context_window_tokens) if has_context_budget else output_budget
+        context_used = input_tokens + output_tokens
+        context_raw_residue = context_budget - context_used
+        context_residue = max(0, context_raw_residue)
+        context_ratio = min(1.0, context_used / context_budget)
+
+        effective_mode = "context" if token_budget_mode == "context" and has_context_budget else "output"
+        selected_residue = context_residue if effective_mode == "context" else output_residue
+        selected_budget = context_budget if effective_mode == "context" else output_budget
+        selected_used = context_used if effective_mode == "context" else output_used
+        selected_ratio = context_ratio if effective_mode == "context" else output_ratio
+
+        return {
+            "input_tokens": input_tokens,
+            "input_cached_tokens": input_cached_tokens,
+            "input_uncached_tokens": input_uncached_tokens,
+            "output_tokens": output_tokens,
+            "cache_tokens": cache_tokens,
+            "task_total_tokens": total_tokens,
+            "output_budget_total_tokens": output_budget,
+            "output_budget_used_tokens": output_used,
+            "output_budget_residue_tokens": output_residue,
+            "output_budget_usage_ratio": output_ratio,
+            "output_budget_usage_percent": round(output_ratio * 100, 2),
+            "output_budget_exceeded": output_raw_residue < 0,
+            "context_window_total_tokens": cls._safe_int(context_window_tokens),
+            "context_budget_total_tokens": context_budget,
+            "context_budget_used_tokens": context_used,
+            "context_budget_residue_tokens": context_residue,
+            "context_budget_usage_ratio": context_ratio,
+            "context_budget_usage_percent": round(context_ratio * 100, 2),
+            "context_budget_exceeded": context_raw_residue < 0,
+            "selected_budget_mode": effective_mode,
+            "selected_budget_total_tokens": selected_budget,
+            "selected_budget_used_tokens": selected_used,
+            "selected_budget_residue_tokens": selected_residue,
+            "selected_budget_usage_ratio": selected_ratio,
+            "selected_budget_usage_percent": round(selected_ratio * 100, 2),
+            "chart": {
+                "type": "bar",
+                "direction": "horizontal",
+                "title": {"text": "token用量占比图"},
+                "data": {
+                    "values": [
+                        {
+                            "category": "token用量",
+                            "item": "input_cached",
+                            "value": input_cached_tokens,
+                        },
+                        {
+                            "category": "token用量",
+                            "item": "input_uncached",
+                            "value": input_uncached_tokens,
+                        },
+                        {
+                            "category": "token用量",
+                            "item": "output",
+                            "value": output_tokens,
+                        },
+                        {
+                            "category": "token用量",
+                            "item": "sum_tokens",
+                            "value": sum_tokens,
+                        },
+                    ]
+                },
+                "xField": "value",
+                "yField": "category",
+                "seriesField": "item",
+                "stack": True,
+                "legends": {"visible": True, "orient": "bottom"},
+                "label": {"visible": True, "formatter": "value"},
+            },
+        }
 
 
     
@@ -335,69 +463,97 @@ class AgentLoop:
         # Agent loop
         iteration = 0
         final_content = None
+        task_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cache_tokens": 0,
+        }
+        if isinstance(message_tool, MessageTool):
+            message_tool.set_token_monitor_factory(
+                lambda: self._build_token_monitor(
+                    task_usage,
+                    self.max_tokens,
+                    self.context_window_tokens,
+                    self.token_budget_mode,
+                )
+            )
 
         session.add_message("user", msg.content)
-        
-        while iteration < self.max_iterations:
-            iteration += 1
-            
-            # Call LLM
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-                reasoning_effort=self.reasoning_effort,
-            )
-            
-            # Handle tool calls
-            if response.has_tool_calls:
-                # Add assistant message with tool calls
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)  # Must be JSON string
-                        }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts
+        try:
+            while iteration < self.max_iterations:
+                iteration += 1
+                
+                # Call LLM
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=self.tools.get_definitions(),
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
                 )
+                self._accumulate_usage(task_usage, response.usage)
                 
-                # Persist tool calls onto session list natively
-                session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
-                
-                # Execute tools
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments, indent=2, ensure_ascii=False)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    push_message = OutboundMessage(
-                        channel=msg.channel,
-                        chat_id=msg.chat_id,
-                        content=(
-                            f"🛠️**正在调用工具**： `{tool_call.name}`\n"
-                            f"🔢**参数列表**：\n"
-                            f"```json\n{args_str}\n```"
+                # Handle tool calls
+                if response.has_tool_calls:
+                    # Add assistant message with tool calls
+                    tool_call_dicts = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False)  # Must be JSON string
+                            }
+                        }
+                        for tc in response.tool_calls
+                    ]
+                    messages = self.context.add_assistant_message(
+                        messages, response.content, tool_call_dicts
+                    )
+                    
+                    # Persist tool calls onto session list natively
+                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                    
+                    # Execute tools
+                    for tool_call in response.tool_calls:
+                        args_str = json.dumps(tool_call.arguments, indent=2, ensure_ascii=False)
+                        logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+                        push_message = OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=(
+                                f"🛠️**正在调用工具**： `{tool_call.name}`\n"
+                                f"🔢**参数列表**：\n"
+                                f"```json\n{args_str}\n```"
+                            ),
+                            metadata={
+                                "token_monitor": self._build_token_monitor(
+                                    task_usage,
+                                    self.max_tokens,
+                                    self.context_window_tokens,
+                                    self.token_budget_mode,
+                                )
+                            },
                         )
-                    )
-                    await self.bus.publish_outbound(push_message)
-                    started = time.perf_counter()
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    result_text = result if isinstance(result, str) else str(result)
-                    
-                    # Instead of _record_tool_event digest, append natively
-                    session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
-                    
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
-                    )
-            else:
-                # No tool calls, we're done
-                final_content = response.content
-                break
+                        await self.bus.publish_outbound(push_message)
+                        started = time.perf_counter()
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        result_text = result if isinstance(result, str) else str(result)
+                        
+                        # Instead of _record_tool_event digest, append natively
+                        session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
+                        
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_call.name, result
+                        )
+                else:
+                    # No tool calls, we're done
+                    final_content = response.content
+                    break
+        finally:
+            if isinstance(message_tool, MessageTool):
+                message_tool.set_token_monitor_factory(None)
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
@@ -406,11 +562,19 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         await self.compressor.compress_if_needed(session)
         self.sessions.save(session)
+
+        token_monitor = self._build_token_monitor(
+            task_usage,
+            self.max_tokens,
+            self.context_window_tokens,
+            self.token_budget_mode,
+        )
         
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
-            content=final_content
+            content=final_content,
+            metadata={"token_monitor": token_monitor},
         )
     
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
@@ -478,53 +642,80 @@ class AgentLoop:
         # Agent loop (limited for announce handling)
         iteration = 0
         final_content = None
+        task_usage = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cache_tokens": 0,
+        }
+        if (
+            self.merge_subagent_usage
+            and msg.sender_id == "subagent"
+            and isinstance(msg.metadata, dict)
+            and isinstance(msg.metadata.get("subagent_usage"), dict)
+        ):
+            self._accumulate_usage(task_usage, msg.metadata.get("subagent_usage"))
+        if isinstance(message_tool, MessageTool):
+            message_tool.set_token_monitor_factory(
+                lambda: self._build_token_monitor(
+                    task_usage,
+                    self.max_tokens,
+                    self.context_window_tokens,
+                    self.token_budget_mode,
+                )
+            )
         
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
-        
-        while iteration < self.max_iterations:
-            iteration += 1
-            
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-                reasoning_effort=self.reasoning_effort,
-            )
-            
-            if response.has_tool_calls:
-                tool_call_dicts = [
-                    {
-                        "id": tc.id,
-                        "type": "function",
-                        "function": {
-                            "name": tc.name,
-                            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
-                        }
-                    }
-                    for tc in response.tool_calls
-                ]
-                messages = self.context.add_assistant_message(
-                    messages, response.content, tool_call_dicts
+        try:
+            while iteration < self.max_iterations:
+                iteration += 1
+                
+                response = await self.provider.chat(
+                    messages=messages,
+                    tools=self.tools.get_definitions(),
+                    model=self.model,
+                    max_tokens=self.max_tokens,
+                    reasoning_effort=self.reasoning_effort,
                 )
+                self._accumulate_usage(task_usage, response.usage)
                 
-                # Persist tool calls onto session list natively
-                session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
-                
-                for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
-                    started = time.perf_counter()
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
-                    result_text = result if isinstance(result, str) else str(result)
-                    
-                    session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
-                    
-                    messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                if response.has_tool_calls:
+                    tool_call_dicts = [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.name,
+                                "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+                            }
+                        }
+                        for tc in response.tool_calls
+                    ]
+                    messages = self.context.add_assistant_message(
+                        messages, response.content, tool_call_dicts
                     )
-            else:
-                final_content = response.content
-                break
+                    
+                    # Persist tool calls onto session list natively
+                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                    
+                    for tool_call in response.tool_calls:
+                        args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
+                        logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
+                        started = time.perf_counter()
+                        result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                        result_text = result if isinstance(result, str) else str(result)
+                        
+                        session.add_message("tool", result_text, tool_call_id=tool_call.id, name=tool_call.name)
+                        
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_call.name, result
+                        )
+                else:
+                    final_content = response.content
+                    break
+        finally:
+            if isinstance(message_tool, MessageTool):
+                message_tool.set_token_monitor_factory(None)
         
         if final_content is None:
             final_content = "Background task completed."
@@ -533,11 +724,19 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         await self.compressor.compress_if_needed(session)
         self.sessions.save(session)
+
+        token_monitor = self._build_token_monitor(
+            task_usage,
+            self.max_tokens,
+            self.context_window_tokens,
+            self.token_budget_mode,
+        )
         
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
-            content=final_content
+            content=final_content,
+            metadata={"token_monitor": token_monitor},
         )
     
     async def process_direct(
