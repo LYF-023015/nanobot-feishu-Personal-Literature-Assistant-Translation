@@ -250,7 +250,7 @@ class SubagentManager:
             ]
             
             # Run agent loop (limited iterations)
-            max_iterations = 50
+            max_iterations = 100
             iteration = 0
             final_result: str | None = None
             task_usage = {
@@ -367,9 +367,14 @@ Summarize this naturally for the user. Keep it brief (1-2 sentences). Do not men
     
     def _build_subagent_prompt(self, task: str) -> str:
         """Build a focused system prompt for the subagent."""
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M (%A)")
         return f"""# Subagent
 
 You are a subagent spawned by the main agent to complete a specific task.
+
+## Current Time
+{now}
 
 ## Your Task
 {task}

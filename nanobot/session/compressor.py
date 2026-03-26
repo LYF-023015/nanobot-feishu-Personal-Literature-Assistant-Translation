@@ -151,11 +151,13 @@ class SessionContextCompressor:
             "You compress chat history into a precise rolling summary. "
             "Keep key facts, user goals, constraints, decisions, open tasks, and tool outcomes. "
             "Prefer concise bullet points. Avoid hallucinations."
+            "Do not simply abandon the old summary - instead, update it with new information from the archived messages. "
         )
         user_prompt = (
             "Update the rolling summary with new archived messages.\n\n"
             f"Previous summary:\n{previous_summary or '(empty)'}\n\n"
             f"New archived messages:\n{segment_text}\n\n"
+            f"Current time:\n{time.strftime('%Y-%m-%d %H:%M:%S')}\n\n"
             "Output rules:\n"
             "1) Keep only durable context useful for future turns.\n"
             "2) Keep unresolved TODOs and blockers explicit.\n"

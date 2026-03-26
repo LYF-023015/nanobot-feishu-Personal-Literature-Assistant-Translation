@@ -884,16 +884,20 @@ class NotionTool(Tool):
                     self._append_text_segment(rich_text, url, {}, link_url=url)
             elif match.group("bolditalic") is not None:
                 token = match.group("bolditalic")
-                self._append_text_segment(rich_text, token[3:-3], {"bold": True, "italic": True})
+                inner = self._inline_to_rich_text(token[3:-3])
+                rich_text.extend(self._apply_annotation_to_nodes(inner, {"bold": True, "italic": True}))
             elif match.group("bold") is not None:
                 token = match.group("bold")
-                self._append_text_segment(rich_text, token[2:-2], {"bold": True})
+                inner = self._inline_to_rich_text(token[2:-2])
+                rich_text.extend(self._apply_annotation_to_nodes(inner, {"bold": True}))
             elif match.group("strike") is not None:
                 token = match.group("strike")
-                self._append_text_segment(rich_text, token[2:-2], {"strikethrough": True})
+                inner = self._inline_to_rich_text(token[2:-2])
+                rich_text.extend(self._apply_annotation_to_nodes(inner, {"strikethrough": True}))
             elif match.group("italic") is not None:
                 token = match.group("italic")
-                self._append_text_segment(rich_text, token[1:-1], {"italic": True})
+                inner = self._inline_to_rich_text(token[1:-1])
+                rich_text.extend(self._apply_annotation_to_nodes(inner, {"italic": True}))
             else:
                 self._append_text_segment(rich_text, match.group(0), {})
             cursor = end
@@ -901,6 +905,38 @@ class NotionTool(Tool):
         if cursor < len(text):
             self._append_text_segment(rich_text, text[cursor:], {})
         return rich_text
+
+    def _apply_annotation_to_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        extra: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Overlay extra annotation flags onto a list of rich-text nodes.
+
+        Equation nodes don't carry annotations, so they are left unchanged.
+        For text nodes the extra flags are merged into the existing annotations.
+        This lets bold/italic/strike wrappers compose correctly with nested links
+        and inline code (e.g. **[text](url)** → bold link node).
+        """
+        result: list[dict[str, Any]] = []
+        for node in nodes:
+            if node.get("type") == "equation":
+                result.append(node)
+                continue
+            # Deep-copy the node to avoid mutating cached objects
+            new_node = {
+                "type": node["type"],
+                "text": dict(node["text"]),
+            }
+            if "link" in node["text"]:
+                new_node["text"]["link"] = node["text"]["link"]
+            existing = node.get("annotations", {})
+            merged = dict(existing)
+            for k, v in extra.items():
+                merged[k] = v
+            new_node["annotations"] = self._default_annotations(merged)
+            result.append(new_node)
+        return result
 
     def _default_annotations(self, annotations: dict[str, Any] | None = None) -> dict[str, Any]:
         merged = {
