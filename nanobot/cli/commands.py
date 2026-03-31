@@ -218,6 +218,7 @@ def gateway(
         notion_config=config.tools.notion,
         tool_history_config=config.tools.tool_history,
         context_compression_config=config.tools.context_compression,
+        memory_system_config=config.tools.memory_system,
         feishu_config=config.channels.feishu,
         cron_service=cron,
         restrict_to_workspace=config.tools.restrict_to_workspace,
@@ -339,6 +340,7 @@ def agent(
         notion_config=config.tools.notion,
         tool_history_config=config.tools.tool_history,
         context_compression_config=config.tools.context_compression,
+        memory_system_config=config.tools.memory_system,
         feishu_config=config.channels.feishu,
         restrict_to_workspace=config.tools.restrict_to_workspace,
     )
@@ -412,9 +414,242 @@ def agent(
         asyncio.run(run_interactive())
 
 
-# ============================================================================
-# Channel Commands
-# ============================================================================
+@app.command()
+def memory_refresh(
+    diary: str = typer.Option(..., "--diary", help="Path to daily diary markdown file"),
+    source: str = typer.Option("", "--source", help="Optional extracted_from label"),
+):
+    """Extract and merge personal memory from a daily diary file."""
+    from nanobot.config.loader import load_config
+    from nanobot.bus.queue import MessageBus
+    from nanobot.providers.litellm_provider import LiteLLMProvider
+    from nanobot.agent.loop import AgentLoop
+
+    config = load_config()
+    api_key = config.get_api_key()
+    api_base = config.get_api_base()
+    model = config.agents.defaults.model
+    is_bedrock = model.startswith("bedrock/")
+    if not api_key and not is_bedrock:
+        console.print("[red]Error: No API key configured.[/red]")
+        raise typer.Exit(1)
+
+    bus = MessageBus()
+    provider = LiteLLMProvider(
+        api_key=api_key,
+        api_base=api_base,
+        default_model=config.agents.defaults.model,
+    )
+    agent_loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=config.workspace_path,
+        model=config.agents.defaults.model,
+        max_tokens=config.agents.defaults.max_tokens,
+        context_window_tokens=config.agents.defaults.context_window_tokens,
+        token_budget_mode=config.agents.defaults.token_budget_mode,
+        merge_subagent_usage=config.agents.defaults.merge_subagent_usage,
+        max_iterations=config.agents.defaults.max_tool_iterations,
+        reasoning_effort=config.agents.defaults.reasoning_effort,
+        web_search_config=config.tools.web.search,
+        exec_config=config.tools.exec,
+        mineru_config=config.tools.mineru,
+        notion_config=config.tools.notion,
+        tool_history_config=config.tools.tool_history,
+        context_compression_config=config.tools.context_compression,
+        memory_system_config=config.tools.memory_system,
+        feishu_config=config.channels.feishu,
+        restrict_to_workspace=config.tools.restrict_to_workspace,
+    )
+
+    diary_path = Path(diary).expanduser()
+    if not diary_path.exists():
+        console.print(f"[red]Diary not found:[/red] {diary_path}")
+        raise typer.Exit(1)
+
+    async def run_once():
+        result = await agent_loop.process_memory_daily_update(diary_path, extracted_from=source or diary_path.name)
+        console.print(json.dumps(result, ensure_ascii=False))
+
+    import json
+    asyncio.run(run_once())
+
+
+@app.command()
+def memory_status(
+    user_id: str = typer.Option("", "--user-id", help="Optional memory user id override"),
+    events: int = typer.Option(8, "--events", help="How many recent merge events to show"),
+):
+    """Show personal memory database status and recent events."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.personal_memory_store import PersonalMemoryStore
+
+    config = load_config()
+    store = PersonalMemoryStore(config.workspace_path, config.tools.memory_system)
+    stats = store.get_stats(user_id=user_id or None)
+
+    console.print(f"\n{__logo__} Personal Memory Status\n")
+    console.print(f"DB: [cyan]{stats['db_path']}[/cyan]")
+    console.print(f"User: [cyan]{stats['user_id']}[/cyan]")
+    console.print(f"Active: [green]{stats['active']}[/green]")
+    console.print(f"Superseded: [yellow]{stats['superseded']}[/yellow]")
+    console.print(f"Archived: [dim]{stats['archived']}[/dim]")
+    console.print(f"Candidates(unmerged/total): [magenta]{stats['candidates_unmerged']}[/magenta] / {stats['candidates_total']}")
+    console.print(f"Events: [blue]{stats['events_total']}[/blue]")
+    console.print(f"Latest update: [cyan]{stats['latest_update'] or 'N/A'}[/cyan]")
+
+    core_items = store.list_core_candidates(user_id=user_id or None)
+    if core_items:
+        table = Table(title="Auto Core Memory")
+        table.add_column("Slot", style="cyan")
+        table.add_column("Kind", style="green")
+        table.add_column("Priority", style="yellow")
+        table.add_column("Summary")
+        for item in core_items:
+            table.add_row(
+                str(item.get("slot") or ""),
+                str(item.get("kind") or ""),
+                str(item.get("priority") or 0),
+                str(item.get("summary") or item.get("content") or ""),
+            )
+        console.print(table)
+
+    recent_events = store.list_recent_events(user_id=user_id or None, limit=max(0, events))
+    if recent_events:
+        evt = Table(title="Recent Memory Events")
+        evt.add_column("Time", style="cyan")
+        evt.add_column("Action", style="green")
+        evt.add_column("Memory ID", style="yellow")
+        evt.add_column("Reason")
+        for item in recent_events:
+            evt.add_row(
+                str(item.get("created_at") or ""),
+                str(item.get("action") or ""),
+                str(item.get("memory_id") or ""),
+                str(item.get("reason") or ""),
+            )
+        console.print(evt)
+
+
+@app.command()
+def memory_search(
+    query: str = typer.Argument(..., help="Query for personal memory retrieval"),
+    top_k: int = typer.Option(5, "--top-k", help="Top-K memories to return"),
+    user_id: str = typer.Option("", "--user-id", help="Optional memory user id override"),
+):
+    """Search personal memory using the same retrieval logic as prompt injection."""
+    from nanobot.config.loader import load_config
+    from nanobot.agent.personal_memory_store import PersonalMemoryStore
+
+    config = load_config()
+    store = PersonalMemoryStore(config.workspace_path, config.tools.memory_system)
+    results = store.retrieve(query=query, top_k=max(1, top_k), user_id=user_id or None)
+
+    console.print(f"\n{__logo__} Memory Search\n")
+    console.print(f"Query: [cyan]{query}[/cyan]")
+    console.print(f"Hits: [green]{len(results)}[/green]\n")
+
+    if not results:
+        console.print("[yellow]No relevant memories found.[/yellow]")
+        raise typer.Exit(0)
+
+    table = Table(title="Retrieved Personal Memories")
+    table.add_column("Slot", style="cyan")
+    table.add_column("Kind", style="green")
+    table.add_column("Scope", style="yellow")
+    table.add_column("Priority", style="magenta")
+    table.add_column("Summary")
+    for item in results:
+        table.add_row(
+            str(item.get("slot") or ""),
+            str(item.get("kind") or ""),
+            str(item.get("scope") or ""),
+            str(item.get("priority") or 0),
+            str(item.get("summary") or item.get("content") or ""),
+        )
+    console.print(table)
+
+
+@app.command()
+def memory_benchmark(
+    query: str = typer.Argument(..., help="Query text to benchmark prompt-memory retrieval"),
+    repeats: int = typer.Option(5, "--repeats", min=1, help="Number of hot-run repeats"),
+    session_id: str = typer.Option("cli:bench", "--session", "-s", help="Session ID for benchmark context"),
+):
+    """Benchmark personal memory retrieval and context build latency."""
+    import statistics
+    import time
+
+    from nanobot.config.loader import load_config
+    from nanobot.agent.context import ContextBuilder
+
+    config = load_config()
+    ctx = ContextBuilder(config.workspace_path, memory_system_config=config.tools.memory_system)
+
+    history = [
+        {"role": "user", "content": "我们之前讨论过长期记忆系统和 prompt 注入。"},
+        {"role": "assistant", "content": "好的，我会基于已有长期记忆继续回答。"},
+    ]
+    session_summary = f"session={session_id}; topic=memory benchmark"
+
+    def run_once() -> dict:
+        retrieval_ms = 0.0
+        retrieved_count = 0
+        if ctx.memory_retriever:
+            t0 = time.perf_counter()
+            retrieved = ctx.memory_retriever.retrieve_for_prompt(
+                user_text=query,
+                session_state=session_summary,
+                recent_messages=history,
+            )
+            retrieval_ms = (time.perf_counter() - t0) * 1000.0
+            retrieved_count = len(retrieved)
+        t1 = time.perf_counter()
+        _ = ctx.build_messages(
+            history=history,
+            current_message=query,
+            session_summary=session_summary,
+            channel="cli",
+            chat_id="benchmark",
+        )
+        build_ms = (time.perf_counter() - t1) * 1000.0
+        stats = dict(ctx.last_build_stats)
+        stats["direct_retrieval_ms"] = round(retrieval_ms, 3)
+        stats["direct_retrieved_count"] = retrieved_count
+        stats["measured_build_ms"] = round(build_ms, 3)
+        return stats
+
+    cold = run_once()
+    hots = [run_once() for _ in range(max(1, repeats))]
+
+    def metric(rows: list[dict], key: str) -> tuple[float, float, float]:
+        vals = [float(r.get(key, 0.0) or 0.0) for r in rows]
+        return min(vals), statistics.mean(vals), max(vals)
+
+    console.print(f"\n{__logo__} Memory Benchmark\n")
+    console.print(f"Query: [cyan]{query}[/cyan]")
+    console.print(f"Memory enabled: [green]{config.tools.memory_system.enabled}[/green]")
+    console.print(f"Retrieval top-k: [cyan]{config.tools.memory_system.retrieval_top_k}[/cyan]")
+    console.print(f"Cold run retrieved: [green]{cold.get('retrieved_count', 0)}[/green]")
+    console.print(f"Cold direct retrieval: [yellow]{cold.get('direct_retrieval_ms', 0.0):.3f} ms[/yellow]")
+    console.print(f"Cold context retrieval: [yellow]{cold.get('retrieval_ms', 0.0):.3f} ms[/yellow]")
+    console.print(f"Cold system prompt: [yellow]{cold.get('system_prompt_ms', 0.0):.3f} ms[/yellow]")
+    console.print(f"Cold total context build: [yellow]{cold.get('total_ms', 0.0):.3f} ms[/yellow]\n")
+
+    table = Table(title=f"Hot Runs x{len(hots)}")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Min (ms)", style="green")
+    table.add_column("Mean (ms)", style="yellow")
+    table.add_column("Max (ms)", style="magenta")
+    for key, label in [
+        ("direct_retrieval_ms", "Direct retrieval"),
+        ("retrieval_ms", "Context retrieval"),
+        ("system_prompt_ms", "System prompt build"),
+        ("total_ms", "Total context build"),
+    ]:
+        mn, avg, mx = metric(hots, key)
+        table.add_row(label, f"{mn:.3f}", f"{avg:.3f}", f"{mx:.3f}")
+    console.print(table)
 
 
 channels_app = typer.Typer(help="Manage channels")

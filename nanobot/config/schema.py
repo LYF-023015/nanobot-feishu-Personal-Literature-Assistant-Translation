@@ -197,6 +197,34 @@ class ContextCompressionConfig(BaseModel):
     min_interval_seconds: int = 60
 
 
+class RetrievalWeightsConfig(BaseModel):
+    """Ranking weights for personal memory retrieval."""
+    keyword: float = 2.0
+    tag: float = 1.5
+    summary: float = 1.5
+    content: float = 1.0
+    priority: float = 0.15
+    recency: float = 0.3
+    kind: float = 0.5
+    scope: float = 0.5
+
+
+class MemorySystemConfig(BaseModel):
+    """Personal memory database + retrieval configuration."""
+    enabled: bool = False
+    db_path: str = Field(default_factory=lambda: str(get_workspace_path() / "memory" / "personal_memory.db"))
+    default_user_id: str = "shared"
+    retrieval_top_k: int = 5
+    fallback_top_k: int = 2
+    core_memory_max_items: int = 8
+    max_candidates_per_run: int = 3
+    max_related_memories: int = 5
+    summary_max_chars: int = 220
+    llm_model: str | None = None
+    update_memory_md: bool = True
+    retrieval_weights: RetrievalWeightsConfig = Field(default_factory=RetrievalWeightsConfig)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -206,6 +234,7 @@ class ToolsConfig(BaseModel):
     notion: NotionToolConfig = Field(default_factory=NotionToolConfig)
     tool_history: ToolHistoryConfig = Field(default_factory=ToolHistoryConfig)
     context_compression: ContextCompressionConfig = Field(default_factory=ContextCompressionConfig)
+    memory_system: MemorySystemConfig = Field(default_factory=MemorySystemConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 

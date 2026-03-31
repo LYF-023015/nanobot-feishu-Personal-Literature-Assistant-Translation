@@ -1,4 +1,5 @@
 from nanobot.agent.loop import AgentLoop
+import json
 
 
 def test_build_token_monitor_clamps_negative_residue() -> None:
@@ -57,3 +58,39 @@ def test_build_token_monitor_chart_includes_tool_calls_when_provided() -> None:
 
     values = monitor["chart"]["data"]["values"]
     assert {"category": "token用量", "item": "tool_calls", "value": 3} in values
+
+
+def test_format_tool_arguments_for_panel_truncates_only_long_values() -> None:
+    long_text = "a" * 1500
+    args = {
+        "short": "ok",
+        "long": long_text,
+        "count": 3,
+    }
+
+    formatted = AgentLoop._format_tool_arguments_for_panel(args, max_value_chars=1000)
+    parsed = json.loads(formatted)
+
+    assert parsed["short"] == "ok"
+    assert parsed["count"] == 3
+    assert "内容已截断" in parsed["long"]
+    assert len(parsed["long"]) > 1000
+
+
+def test_format_tool_arguments_for_panel_preserves_nested_structure() -> None:
+    long_text = "b" * 1200
+    args = {
+        "nested": {
+            "message": long_text,
+            "items": ["x", long_text],
+        },
+        "another": "keep",
+    }
+
+    formatted = AgentLoop._format_tool_arguments_for_panel(args, max_value_chars=1000)
+    parsed = json.loads(formatted)
+
+    assert set(parsed.keys()) == {"nested", "another"}
+    assert parsed["another"] == "keep"
+    assert "内容已截断" in parsed["nested"]["message"]
+    assert "内容已截断" in parsed["nested"]["items"][1]

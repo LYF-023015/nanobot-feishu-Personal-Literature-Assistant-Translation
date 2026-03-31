@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import json
 import time
 from pathlib import Path
@@ -14,6 +15,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.memory_compiler import MemoryCompiler
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import (
     AppendFileTool,
@@ -30,6 +32,7 @@ from nanobot.agent.tools.notion import NotionTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.session_manage import SessionManageTool
 from nanobot.agent.tools.cron import CronTool
+from nanobot.agent.tools.memory_search import MemorySearchTool
 from nanobot.agent.subagent import SubagentManager
 from nanobot.session.compressor import SessionContextCompressor
 from nanobot.session.manager import Session, SessionManager
@@ -40,6 +43,7 @@ if TYPE_CHECKING:
         FeishuConfig,
         ImageGenConfig,
         ContextCompressionConfig,
+        MemorySystemConfig,
         MineruConfig,
         NotionToolConfig,
         ToolHistoryConfig,
@@ -79,6 +83,7 @@ class AgentLoop:
         notion_config: NotionToolConfig | None = None,
         tool_history_config: ToolHistoryConfig | None = None,
         context_compression_config: ContextCompressionConfig | None = None,
+        memory_system_config: MemorySystemConfig | None = None,
         feishu_config: FeishuConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
@@ -87,6 +92,7 @@ class AgentLoop:
         from nanobot.config.schema import FeishuConfig
         from nanobot.config.schema import ImageGenConfig
         from nanobot.config.schema import ContextCompressionConfig
+        from nanobot.config.schema import MemorySystemConfig
         from nanobot.config.schema import MineruConfig
         from nanobot.config.schema import NotionToolConfig
         from nanobot.config.schema import ToolHistoryConfig
@@ -109,16 +115,23 @@ class AgentLoop:
         self.notion_config = notion_config or NotionToolConfig()
         self.tool_history_config = tool_history_config or ToolHistoryConfig()
         self.context_compression_config = context_compression_config or ContextCompressionConfig()
+        self.memory_system_config = memory_system_config or MemorySystemConfig()
         self.feishu_config = feishu_config or FeishuConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         
-        self.context = ContextBuilder(workspace)
+        self.context = ContextBuilder(workspace, memory_system_config=self.memory_system_config)
         self.sessions = SessionManager(workspace)
         self.compressor = SessionContextCompressor(
             provider=provider,
             sessions_dir=self.sessions.sessions_dir,
             config=self.context_compression_config,
+            default_model=self.model,
+        )
+        self.memory_compiler = MemoryCompiler(
+            workspace=workspace,
+            provider=provider,
+            config=self.memory_system_config,
             default_model=self.model,
         )
         self.tools = ToolRegistry()
@@ -360,6 +373,13 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # Personal memory search tool
+        if self.memory_system_config and self.memory_system_config.enabled:
+            self.tools.register(MemorySearchTool(
+                workspace=self.workspace,
+                config=self.memory_system_config,
+            ))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -414,7 +434,8 @@ class AgentLoop:
         
         # Get or create session (respect active override)
         active_key = self.sessions.get_active_session_key(msg.channel, msg.chat_id)
-        session_key = active_key or msg.session_key
+        session_key_override = msg.metadata.get("session_key_override") if isinstance(msg.metadata, dict) else None
+        session_key = active_key or session_key_override or msg.session_key
         session = self.sessions.get_or_create(session_key)
         await self.compressor.compress_if_needed(session)
         session_summary = self.compressor.get_summary(session.key)
@@ -520,6 +541,7 @@ class AgentLoop:
                     # Execute tools
                     for tool_call in response.tool_calls:
                         args_str = json.dumps(tool_call.arguments, indent=2, ensure_ascii=False)
+                        panel_args_str = self._format_tool_arguments_for_panel(tool_call.arguments, max_value_chars=1000)
                         logger.debug(f"Executing tool: {tool_call.name} with arguments: {args_str}")
                         if feishu_stream_enabled:
                             if not stream_initialized:
@@ -537,14 +559,15 @@ class AgentLoop:
                                 )
                                 stream_initialized = True
 
+                            call_started_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             entry_prefix = f"###### {len(tool_log_entries) + 1}. `{tool_call.name}`"
-                            args_preview = self._truncate_text(args_str, 2000)
                             tool_log_entries.append(
                                 (
                                     f"{entry_prefix}\n"
+                                    f"- 调用时间: {call_started_at}\n"
                                     f"- 状态: 执行中\n"
                                     f"- 参数:\n"
-                                    f"```json\n{args_preview}\n```"
+                                    f"```json\n{panel_args_str}\n```"
                                 )
                             )
                             await self._publish_feishu_tool_update(
@@ -585,13 +608,15 @@ class AgentLoop:
 
                         if feishu_stream_enabled and tool_log_entries:
                             elapsed = time.perf_counter() - started
+                            call_finished_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             entry_prefix = f"###### {len(tool_log_entries)}. `{tool_call.name}`"
-                            args_preview = self._truncate_text(args_str, 2000)
                             tool_log_entries[-1] = (
                                 f"{entry_prefix}\n"
+                                f"- 调用时间: {call_started_at}\n"
+                                f"- 完成时间: {call_finished_at}\n"
                                 f"- 状态: 已完成 ({elapsed:.2f}s)\n"
                                 f"- 参数:\n"
-                                f"```json\n{args_preview}\n```"
+                                f"```json\n{panel_args_str}\n```"
                             )
                             await self._publish_feishu_tool_update(
                                 msg=msg,
@@ -671,6 +696,42 @@ class AgentLoop:
         if len(value) <= limit:
             return value
         return f"{value[:limit]}\n...\n(内容已截断，原始长度: {len(value)} 字符)"
+
+    @classmethod
+    def _truncate_tool_argument_value(cls, value: Any, max_value_chars: int) -> Any:
+        """Recursively truncate oversized argument values while preserving parameter structure."""
+        if isinstance(value, str):
+            if len(value) <= max_value_chars:
+                return value
+            return (
+                value[:max_value_chars]
+                + f"... (内容已截断，原始长度: {len(value)} 字符)"
+            )
+
+        if isinstance(value, list):
+            return [cls._truncate_tool_argument_value(item, max_value_chars) for item in value]
+
+        if isinstance(value, dict):
+            return {
+                key: cls._truncate_tool_argument_value(item, max_value_chars)
+                for key, item in value.items()
+            }
+
+        try:
+            serialized = json.dumps(value, ensure_ascii=False)
+        except TypeError:
+            serialized = str(value)
+
+        if len(serialized) <= max_value_chars:
+            return value
+
+        return cls._truncate_text(serialized, max_value_chars)
+
+    @classmethod
+    def _format_tool_arguments_for_panel(cls, arguments: Any, max_value_chars: int = 1000) -> str:
+        """Format tool arguments for UI while truncating only oversized values."""
+        normalized = cls._truncate_tool_argument_value(arguments, max_value_chars)
+        return json.dumps(normalized, indent=2, ensure_ascii=False)
 
     def _build_tool_panel_markdown(self, entries: list[str]) -> str:
         header = "###### 工具调用记录"
@@ -969,8 +1030,14 @@ class AgentLoop:
             channel=channel,
             sender_id="user",
             chat_id=chat_id,
-            content=content
+            content=content,
+            metadata={"session_key_override": session_key},
         )
         
         response = await self._process_message(msg)
         return response.content if response else ""
+
+    async def process_memory_daily_update(self, diary_path: Path, extracted_from: str | None = None) -> dict[str, int]:
+        """Run daily memory extraction+merge and refresh MEMORY.md."""
+        source = extracted_from or diary_path.name
+        return await self.memory_compiler.daily_update_from_file(diary_path, extracted_from=source)
