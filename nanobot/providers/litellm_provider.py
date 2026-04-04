@@ -368,6 +368,16 @@ class LiteLLMProvider(LLMProvider):
 
         cache_tokens = min(cache_tokens, prompt_tokens)
 
+        # Workaround: some proxy providers (e.g. yeysai.com) under-report prompt_tokens
+        # while total_tokens remains accurate. If prompt_tokens is suspiciously small
+        # (i.e. < total_tokens - completion_tokens), use the derived value instead.
+        if total_tokens > 0 and completion_tokens >= 0:
+            derived_prompt = total_tokens - completion_tokens
+            if derived_prompt > prompt_tokens:
+                prompt_tokens = derived_prompt
+                # Re-clamp cache_tokens against the corrected prompt_tokens
+                cache_tokens = min(cache_tokens, prompt_tokens)
+
         return {
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,

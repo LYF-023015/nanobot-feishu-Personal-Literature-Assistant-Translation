@@ -39,7 +39,8 @@ class FeishuConfig(BaseModel):
     streaming_print_step_default: int = 1  # Client render step (characters per tick)
     streaming_print_strategy: Literal["fast", "delay"] = "delay"  # Streaming print policy
     streaming_max_updates_per_sec: int = 50  # Local throttling guard for update requests
-    streaming_finalize_timeout_sec: int = 15  # Reserved timeout for graceful finalize/cleanup
+    streaming_preemptive_timeout_sec: int = 480  # Preemptive switch to regular messages before CardKit hard timeout
+    streaming_finalize_timeout_sec: int = 45  # Reserved timeout for graceful finalize/cleanup
 
 
 class DiscordConfig(BaseModel):

@@ -217,10 +217,19 @@ class AgentLoop:
         token_budget_mode: str = "output",
         tool_calls_completed: int = 0,
     ) -> dict[str, Any]:
-        input_tokens = cls._safe_int(usage.get("prompt_tokens"))
+        prompt_tokens = cls._safe_int(usage.get("prompt_tokens"))
         output_tokens = cls._safe_int(usage.get("completion_tokens"))
         cache_tokens = cls._safe_int(usage.get("cache_tokens"))
         total_tokens = cls._safe_int(usage.get("total_tokens"))
+
+        # Provider usage semantics are not always consistent:
+        # some return prompt_tokens as total input, some as uncached input only.
+        # Reconcile via total_tokens - completion_tokens and take the safer upper bound.
+        derived_input_tokens = max(0, total_tokens - output_tokens)
+        input_tokens = max(prompt_tokens, derived_input_tokens)
+        cache_tokens = min(cache_tokens, input_tokens)
+        input_uncached_tokens = max(0, input_tokens - cache_tokens)
+        normalized_total_tokens = max(total_tokens, input_tokens + output_tokens)
 
         output_budget = max(1, cls._safe_int(output_budget_tokens))
         output_used = output_tokens
@@ -265,9 +274,12 @@ class AgentLoop:
 
         return {
             "input_tokens": input_tokens,
+            "prompt_tokens_raw": prompt_tokens,
+            "input_tokens_derived_from_total": derived_input_tokens,
+            "input_uncached_tokens": input_uncached_tokens,
             "output_tokens": output_tokens,
             "cache_tokens": cache_tokens,
-            "task_total_tokens": total_tokens,
+            "task_total_tokens": normalized_total_tokens,
             "output_budget_total_tokens": output_budget,
             "output_budget_used_tokens": output_used,
             "output_budget_residue_tokens": output_residue,
@@ -798,6 +810,8 @@ class AgentLoop:
         stream_id = stream_id or self._build_stream_id(msg)
         chunk_chars = max(20, int(self.feishu_config.streaming_print_step_default) * 16)
         interval = max(0.08, float(self.feishu_config.streaming_print_frequency_ms_default) / 1000.0 * 4.0)
+        timeout_sec = max(1, int(self.feishu_config.streaming_preemptive_timeout_sec))
+        stream_start_time = time.time()
 
         if send_init:
             await self._publish_feishu_stream_init(
@@ -810,7 +824,32 @@ class AgentLoop:
         total = len(final_content)
         cursor = 0
         while cursor < total:
-            cursor = min(total, cursor + chunk_chars)
+            next_cursor = min(total, cursor + chunk_chars)
+            if (time.time() - stream_start_time) > timeout_sec:
+                streamed_text = final_content[:next_cursor]
+                await self.bus.publish_outbound(
+                    OutboundMessage(
+                        channel=msg.channel,
+                        chat_id=msg.chat_id,
+                        content=streamed_text,
+                        metadata={
+                            "token_monitor": token_monitor,
+                            "feishu_stream": {
+                                "action": "finalize",
+                                "stream_id": stream_id,
+                                "full_text": streamed_text,
+                            },
+                        },
+                    )
+                )
+                await self._publish_feishu_timeout_fallback(
+                    msg=msg,
+                    remaining_content=final_content[next_cursor:],
+                    token_monitor=token_monitor,
+                )
+                return
+
+            cursor = next_cursor
             await self.bus.publish_outbound(
                 OutboundMessage(
                     channel=msg.channel,
@@ -842,6 +881,34 @@ class AgentLoop:
                         "full_text": final_content,
                     },
                 },
+            )
+        )
+
+    async def _publish_feishu_timeout_fallback(
+        self,
+        msg: InboundMessage,
+        remaining_content: str,
+        token_monitor: dict[str, Any],
+    ) -> None:
+        """Send non-streaming continuation once preemptive timeout is reached."""
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="当前回答已超出流式窗口限制，后续内容将切换为普通消息继续发送。",
+                metadata={"token_monitor": token_monitor},
+            )
+        )
+
+        if not remaining_content:
+            return
+
+        await self.bus.publish_outbound(
+            OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=remaining_content,
+                metadata={"token_monitor": token_monitor},
             )
         )
     

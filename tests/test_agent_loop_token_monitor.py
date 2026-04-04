@@ -24,6 +24,27 @@ def test_build_token_monitor_clamps_negative_residue() -> None:
     assert monitor["selected_budget_usage_percent"] == 100.0
 
 
+def test_build_token_monitor_input_tokens_merge_prompt_and_cached_semantics() -> None:
+    # Simulate provider semantics where prompt_tokens may be uncached-only,
+    # while total_tokens still includes full input + output.
+    monitor = AgentLoop._build_token_monitor(
+        {
+            "prompt_tokens": 80,
+            "completion_tokens": 20,
+            "total_tokens": 130,
+            "cache_tokens": 30,
+        },
+        output_budget_tokens=200,
+        context_window_tokens=0,
+        token_budget_mode="output",
+    )
+
+    # merged input = max(prompt_tokens, total_tokens - completion_tokens)
+    assert monitor["input_tokens"] == 110
+    values = monitor["chart"]["data"]["values"]
+    assert values[0] == {"category": "token用量", "item": "input", "value": 110}
+
+
 def test_build_token_monitor_chart_values_match_usage() -> None:
     monitor = AgentLoop._build_token_monitor(
         {

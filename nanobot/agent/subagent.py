@@ -86,10 +86,16 @@ class SubagentManager:
 
     def _build_token_monitor(self, usage: dict[str, int]) -> dict[str, Any]:
         """Build token monitor metadata for subagent direct message sends."""
-        input_tokens = self._safe_int(usage.get("prompt_tokens"))
+        prompt_tokens = self._safe_int(usage.get("prompt_tokens"))
         output_tokens = self._safe_int(usage.get("completion_tokens"))
         cache_tokens = self._safe_int(usage.get("cache_tokens"))
         total_tokens = self._safe_int(usage.get("total_tokens"))
+
+        derived_input_tokens = max(0, total_tokens - output_tokens)
+        input_tokens = max(prompt_tokens, derived_input_tokens)
+        cache_tokens = min(cache_tokens, input_tokens)
+        input_uncached_tokens = max(0, input_tokens - cache_tokens)
+        normalized_total_tokens = max(total_tokens, input_tokens + output_tokens)
 
         output_budget = max(1, self._safe_int(self.max_tokens))
         output_used = output_tokens
@@ -99,9 +105,12 @@ class SubagentManager:
 
         return {
             "input_tokens": input_tokens,
+            "prompt_tokens_raw": prompt_tokens,
+            "input_tokens_derived_from_total": derived_input_tokens,
+            "input_uncached_tokens": input_uncached_tokens,
             "output_tokens": output_tokens,
             "cache_tokens": cache_tokens,
-            "task_total_tokens": total_tokens,
+            "task_total_tokens": normalized_total_tokens,
             "output_budget_total_tokens": output_budget,
             "output_budget_used_tokens": output_used,
             "output_budget_residue_tokens": output_residue,
