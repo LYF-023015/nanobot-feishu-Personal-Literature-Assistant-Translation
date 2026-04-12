@@ -39,6 +39,8 @@ class Session:
     def get_history(
         self, 
         max_messages: int = 50,
+        max_dialog_messages: int | None = None,
+        max_tool_messages: int | None = None,
         tool_max_events: int = 5,
         tool_preview_chars: int = 200,
         tool_max_chars: int = 1500,
@@ -48,6 +50,8 @@ class Session:
         
         Args:
             max_messages: Maximum messages to return.
+            max_dialog_messages: Optional cap for recent conversational messages.
+            max_tool_messages: Optional cap for recent tool-related messages.
             tool_max_events: Number of recent tool calls to keep at max_chars.
             tool_preview_chars: Character limit for older tool calls.
             tool_max_chars: Character limit for recent tool calls.
@@ -60,7 +64,47 @@ class Session:
             if m.get("include_in_context", True)
         ]
 
-        recent = context_messages[-max_messages:] if len(context_messages) > max_messages else context_messages
+        recent: list[dict[str, Any]]
+        if max_dialog_messages is None and max_tool_messages is None:
+            recent = context_messages[-max_messages:] if len(context_messages) > max_messages else context_messages
+        else:
+            dialog_limit = max(1, int(max_dialog_messages or max_messages))
+            tool_limit = max(0, int(max_tool_messages or 0))
+
+            selected_indices: set[int] = set()
+            dialog_count = 0
+            tool_count = 0
+
+            for idx in range(len(context_messages) - 1, -1, -1):
+                msg = context_messages[idx]
+                role = str(msg.get("role", ""))
+                is_tool_related = role == "tool" or bool(msg.get("tool_calls"))
+
+                if is_tool_related:
+                    if tool_count < tool_limit:
+                        selected_indices.add(idx)
+                        tool_count += 1
+                    continue
+
+                if role in {"user", "assistant"}:
+                    if dialog_count < dialog_limit:
+                        selected_indices.add(idx)
+                        dialog_count += 1
+                    continue
+
+                # Keep non-tool/non-dialog roles to avoid dropping control messages.
+                selected_indices.add(idx)
+
+            recent = [
+                context_messages[idx]
+                for idx in range(len(context_messages))
+                if idx in selected_indices
+            ]
+
+            max_total = max(1, dialog_limit + tool_limit)
+            if len(recent) > max_total:
+                recent = recent[-max_total:]
+
         out = []
         for m in recent:
             msg = {"role": m["role"], "content": m["content"]}

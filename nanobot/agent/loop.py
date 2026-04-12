@@ -119,6 +119,11 @@ class AgentLoop:
         self.feishu_config = feishu_config or FeishuConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        legacy_keep_recent_tool = getattr(self.context_compression_config, "keep_recent_tool_messages", 0)
+        self._keep_recent_tool_messages = max(
+            0,
+            int(getattr(self.tool_history_config, "keep_recent_messages", legacy_keep_recent_tool)),
+        )
         
         self.context = ContextBuilder(workspace, memory_system_config=self.memory_system_config)
         self.sessions = SessionManager(workspace)
@@ -127,6 +132,7 @@ class AgentLoop:
             sessions_dir=self.sessions.sessions_dir,
             config=self.context_compression_config,
             default_model=self.model,
+            keep_recent_tool_messages=self._keep_recent_tool_messages,
         )
         self.memory_compiler = MemoryCompiler(
             workspace=workspace,
@@ -155,18 +161,23 @@ class AgentLoop:
         self._tool_digest_max_events = max(1, self.tool_history_config.max_events)
         self._tool_digest_max_chars = max(200, self.tool_history_config.max_chars)
         self._tool_preview_chars = max(80, self.tool_history_config.preview_chars)
+        self._keep_recent_dialog_messages = max(1, self.context_compression_config.keep_recent_messages)
+        self._history_dialog_limit: int | None = None
+        self._history_tool_limit: int | None = None
         self._history_max_messages = 50
         self._history_precompress_max_messages = self._history_max_messages
         self._history_postcompress_max_messages = self._history_max_messages
         self._history_no_gap_cap = self._history_max_messages
         if self.context_compression_config.enabled:
+            self._history_dialog_limit = self._keep_recent_dialog_messages
+            self._history_tool_limit = self._keep_recent_tool_messages
             self._history_precompress_max_messages = max(
                 self._history_max_messages,
                 self.context_compression_config.trigger_by_message_count,
             )
             self._history_postcompress_max_messages = max(
                 10,
-                self.context_compression_config.keep_recent_messages + 5,
+                self._keep_recent_dialog_messages + self._keep_recent_tool_messages + 5,
             )
             self._history_no_gap_cap = max(
                 self._history_precompress_max_messages,
@@ -478,6 +489,8 @@ class AgentLoop:
         messages = self.context.build_messages(
             history=session.get_history(
                 max_messages=history_limit,
+                max_dialog_messages=self._history_dialog_limit,
+                max_tool_messages=self._history_tool_limit,
                 tool_max_events=self._tool_digest_max_events,
                 tool_preview_chars=self._tool_preview_chars,
                 tool_max_chars=self._tool_digest_max_chars,
@@ -973,6 +986,8 @@ class AgentLoop:
         messages = self.context.build_messages(
             history=session.get_history(
                 max_messages=history_limit,
+                max_dialog_messages=self._history_dialog_limit,
+                max_tool_messages=self._history_tool_limit,
                 tool_max_events=self._tool_digest_max_events,
                 tool_preview_chars=self._tool_preview_chars,
                 tool_max_chars=self._tool_digest_max_chars,

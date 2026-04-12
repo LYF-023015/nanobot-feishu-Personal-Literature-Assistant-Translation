@@ -25,11 +25,15 @@ class SessionContextCompressor:
         sessions_dir: Path,
         config: ContextCompressionConfig,
         default_model: str,
+        keep_recent_tool_messages: int | None = None,
     ) -> None:
         self.provider = provider
         self.sessions_dir = sessions_dir
         self.config = config
         self.default_model = default_model
+        fallback_tool_keep = getattr(self.config, "keep_recent_tool_messages", 0)
+        selected_tool_keep = fallback_tool_keep if keep_recent_tool_messages is None else keep_recent_tool_messages
+        self.keep_recent_tool_messages = max(0, int(selected_tool_keep))
         self._locks: dict[str, asyncio.Lock] = {}
 
     async def compress_if_needed(self, session: Session) -> bool:
@@ -49,7 +53,7 @@ class SessionContextCompressor:
 
     async def _compress_locked(self, session: Session) -> bool:
         active_messages = self._active_messages(session)
-        if len(active_messages) <= max(self.config.keep_recent_messages + 1, 2):
+        if len(active_messages) <= 2:
             return False
 
         now = time.time()
@@ -65,12 +69,14 @@ class SessionContextCompressor:
         if not (over_message_limit or over_token_limit):
             return False
 
-        keep_recent = max(self.config.keep_recent_messages, 6)
-        compress_count = active_count - keep_recent
+        keep_dialog = max(self.config.keep_recent_messages, 1)
+        keep_tool = self.keep_recent_tool_messages
+        keep_indices = self._select_recent_indices(active_messages, keep_dialog, keep_tool)
+
+        old_segment = [item for item in active_messages if item[0] not in keep_indices]
+        compress_count = len(old_segment)
         if compress_count <= 0:
             return False
-
-        old_segment = active_messages[:compress_count]
         previous_summary = self.get_summary(session.key)
 
         try:
@@ -92,8 +98,10 @@ class SessionContextCompressor:
                 "session_key": session.key,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
                 "summary": new_summary,
-                "active_messages_after": keep_recent,
+                "active_messages_after": len(keep_indices),
                 "compressed_messages": compress_count,
+                "keep_recent_messages": keep_dialog,
+                "keep_recent_tool_messages": keep_tool,
                 "trigger": {
                     "message_count": active_count,
                     "estimated_tokens": estimated_tokens,
@@ -117,6 +125,38 @@ class SessionContextCompressor:
             compress_count,
         )
         return True
+
+    @staticmethod
+    def _select_recent_indices(
+        active_messages: list[tuple[int, dict[str, Any]]],
+        keep_dialog: int,
+        keep_tool: int,
+    ) -> set[int]:
+        """Select indices to keep with separate windows for dialog and tool-related messages."""
+        keep_indices: set[int] = set()
+        dialog_count = 0
+        tool_count = 0
+
+        for idx, msg in reversed(active_messages):
+            role = str(msg.get("role", ""))
+            is_tool_related = role == "tool" or bool(msg.get("tool_calls"))
+
+            if is_tool_related:
+                if tool_count < keep_tool:
+                    keep_indices.add(idx)
+                    tool_count += 1
+                continue
+
+            if role in {"user", "assistant"}:
+                if dialog_count < keep_dialog:
+                    keep_indices.add(idx)
+                    dialog_count += 1
+                continue
+
+            # Preserve other message roles by default.
+            keep_indices.add(idx)
+
+        return keep_indices
 
     def _active_messages(self, session: Session) -> list[tuple[int, dict[str, Any]]]:
         active: list[tuple[int, dict[str, Any]]] = []

@@ -71,6 +71,18 @@ def _migrate_config(data: dict) -> dict:
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
 
+    # Move tools.contextCompression.keepRecentToolMessages → tools.toolHistory.keepRecentMessages
+    context_cfg = tools.get("contextCompression", {})
+    tool_history_cfg = tools.get("toolHistory", {})
+    if (
+        "keepRecentToolMessages" in context_cfg
+        and "keepRecentMessages" not in tool_history_cfg
+    ):
+        tool_history_cfg["keepRecentMessages"] = context_cfg.pop("keepRecentToolMessages")
+
+    tools["toolHistory"] = tool_history_cfg
+    tools["contextCompression"] = context_cfg
+
     data = _rewrite_legacy_default_paths(data)
     return data
 

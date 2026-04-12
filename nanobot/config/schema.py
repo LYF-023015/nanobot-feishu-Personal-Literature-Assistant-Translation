@@ -184,6 +184,7 @@ class ToolHistoryConfig(BaseModel):
     max_events: int = 5
     preview_chars: int = 160
     max_chars: int = 800
+    keep_recent_messages: int = 8
 
 
 class ContextCompressionConfig(BaseModel):
@@ -192,6 +193,8 @@ class ContextCompressionConfig(BaseModel):
     trigger_by_message_count: int = 80
     trigger_by_estimated_tokens: int = 12000
     keep_recent_messages: int = 25
+    # Deprecated: moved to tools.toolHistory.keepRecentMessages.
+    keep_recent_tool_messages: int = 8
     summary_max_tokens: int = 800
     max_rolling_summary_tokens: int = 2000
     summary_model: str | None = None
