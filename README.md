@@ -1,3 +1,9 @@
+<div align="center">
+  <img src="nanobot-feishu_logo.jpg" alt="nanobot" width="500">
+</div>
+
+# 🐈 nanobot-feishu: Feishu-Specialized nanobot Fork
+
 # NanoScholar 二次开发完整文档
 
 > **项目名称**：NanoScholar —— 基于 nanobot-feishu-specilized 的 AI 科研文献智能助手
