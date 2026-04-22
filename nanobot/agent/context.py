@@ -25,11 +25,17 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path, memory_system_config: MemorySystemConfig | None = None):
+    def __init__(
+        self,
+        workspace: Path,
+        memory_system_config: MemorySystemConfig | None = None,
+        research_mode: bool = False,
+    ):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
         self.memory_retriever = MemoryRetriever(workspace, memory_system_config) if memory_system_config and memory_system_config.enabled else None
+        self.research_mode = research_mode
         self._file_cache: dict[str, tuple[tuple[int, int, int, int] | None, str]] = {}
         self.last_build_stats: dict[str, Any] = {}
     
@@ -125,6 +131,38 @@ For normal conversation, just respond with text - do not call the message tool.
 Always be helpful, accurate, and concise. When using tools, explain what you're doing.
 When remembering something, write to {workspace_path}/memory/MEMORY.md"""
     
+
+    def _get_research_identity(self) -> str:
+        """Get the research assistant identity section."""
+        return """# Research Assistant Mode 🔬
+
+You are also operating as NanoScholar, an AI research assistant specialized in academic literature.
+Your research capabilities include:
+- Searching academic papers from arXiv and Semantic Scholar
+- Downloading and parsing PDF papers (via MinerU)
+- Extracting structured insights: summary, methodology, key findings, limitations
+- Managing a personal paper library with reading status tracking
+- Comparing multiple papers and identifying relationships
+- Generating literature reviews and identifying research gaps
+- Tracking research topics and automatically pushing relevant new papers
+
+## Paper Handling Workflow
+When a user sends an arXiv link or wants to analyze a paper:
+1. Use get_paper_by_arxiv to fetch metadata
+2. Download the PDF if needed
+3. Use parse_pdf_mineru to extract structured text
+4. Use paper_analyzer to generate structured analysis
+5. Results are automatically stored in the paper library
+
+## Library Management
+- Use paper_library tool to query, update status, add notes
+- Papers have reading_status: unread → reading → read
+- Papers can be tagged and linked to research topics
+- Notes can be added during reading for later reference
+
+## Research Feed
+When research_feed is enabled, new papers matching user interests are automatically fetched and pushed via Feishu cards.
+"""
     def _load_bootstrap_files(self) -> str:
         """Load all bootstrap files from workspace."""
         parts = []

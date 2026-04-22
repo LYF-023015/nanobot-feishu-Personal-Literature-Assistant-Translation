@@ -87,6 +87,7 @@ class AgentLoop:
         feishu_config: FeishuConfig | None = None,
         cron_service: CronService | None = None,
         restrict_to_workspace: bool = False,
+        research_config: Any = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.config.schema import FeishuConfig
@@ -97,6 +98,7 @@ class AgentLoop:
         from nanobot.config.schema import NotionToolConfig
         from nanobot.config.schema import ToolHistoryConfig
         from nanobot.config.schema import WebSearchConfig
+        from nanobot.config.schema import ResearchConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
@@ -119,13 +121,18 @@ class AgentLoop:
         self.feishu_config = feishu_config or FeishuConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.research_config = research_config or ResearchConfig()
         legacy_keep_recent_tool = getattr(self.context_compression_config, "keep_recent_tool_messages", 0)
         self._keep_recent_tool_messages = max(
             0,
             int(getattr(self.tool_history_config, "keep_recent_messages", legacy_keep_recent_tool)),
         )
         
-        self.context = ContextBuilder(workspace, memory_system_config=self.memory_system_config)
+        self.context = ContextBuilder(
+            workspace,
+            memory_system_config=self.memory_system_config,
+            research_mode=self.research_config.enabled if self.research_config else False,
+        )
         self.sessions = SessionManager(workspace)
         self.compressor = SessionContextCompressor(
             provider=provider,
@@ -403,6 +410,53 @@ class AgentLoop:
                 workspace=self.workspace,
                 config=self.memory_system_config,
             ))
+        
+        # Research tools
+        if self.research_config and self.research_config.enabled:
+            from nanobot.research.paper_store import PaperStore
+            from nanobot.agent.tools.academic_search import (
+                AcademicSearchTool,
+                GetPaperByArxivTool,
+                GetRelatedPapersTool,
+            )
+            from nanobot.agent.tools.paper_analyzer import PaperAnalyzerTool
+            from nanobot.agent.tools.paper_library import PaperLibraryTool
+            from nanobot.agent.tools.download_paper import DownloadPaperPdfTool
+            from nanobot.agent.tools.citation_graph import CitationGraphTool
+            from nanobot.agent.tools.insight_generator import InsightGeneratorTool
+
+            self._paper_store = PaperStore(self.research_config.paper_store.db_path)
+
+            self.tools.register(AcademicSearchTool(
+                default_sources=self.research_config.academic_search.default_sources,
+                arxiv_categories=self.research_config.academic_search.arxiv_categories,
+                semantic_scholar_api_key=self.research_config.academic_search.semantic_scholar_api_key,
+                max_results=self.research_config.academic_search.max_results,
+            ))
+            self.tools.register(GetPaperByArxivTool())
+            self.tools.register(GetRelatedPapersTool(
+                semantic_scholar_api_key=self.research_config.academic_search.semantic_scholar_api_key,
+            ))
+            self.tools.register(CitationGraphTool(
+                semantic_scholar_api_key=self.research_config.academic_search.semantic_scholar_api_key,
+            ))
+            self.tools.register(InsightGeneratorTool(
+                provider=self.provider,
+                paper_store=self._paper_store,
+                model=self.model,
+            ))
+            self.tools.register(DownloadPaperPdfTool(
+                paper_store=self._paper_store,
+                download_dir=self.workspace / "research" / "pdfs",
+            ))
+            self.tools.register(PaperAnalyzerTool(
+                provider=self.provider,
+                paper_store=self._paper_store,
+                model=self.model,
+            ))
+            self.tools.register(PaperLibraryTool(
+                paper_store=self._paper_store,
+            ))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
@@ -529,6 +583,7 @@ class AgentLoop:
         completed_tool_calls = 0
 
         session.add_message("user", msg.content)
+        research_tool_calls: list[tuple[str, str]] = []
         try:
             while iteration < self.max_iterations:
                 iteration += 1
@@ -632,6 +687,12 @@ class AgentLoop:
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         result_text = result if isinstance(result, str) else str(result)
                         completed_tool_calls += 1
+                        if tool_call.name in {
+                            "academic_search", "get_paper_by_arxiv", "paper_analyzer",
+                            "citation_graph", "insight_generator", "paper_library",
+                            "get_related_papers",
+                        }:
+                            research_tool_calls.append((tool_call.name, result_text))
 
                         if feishu_stream_enabled and tool_log_entries:
                             elapsed = time.perf_counter() - started
@@ -699,12 +760,91 @@ class AgentLoop:
             )
             return None
         
+        # Auto-render research card if research tools were used
+        if research_tool_calls and "🎴CARD:" not in (final_content or ""):
+            card_content = self._auto_render_research_card(research_tool_calls)
+            if card_content:
+                final_content = f"{final_content}\n\n{card_content}"
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
             content=final_content,
             metadata={"token_monitor": token_monitor},
         )
+
+    def _auto_render_research_card(self, research_tool_calls: list[tuple[str, str]]) -> str:
+        """Auto-render a research card from the last research tool result."""
+        if not research_tool_calls:
+            return ""
+        try:
+            from nanobot.research.card_renderer import (
+                render_paper_card,
+                render_search_results_card,
+                render_citation_graph_card,
+                render_review_card,
+            )
+            tool_name, result_text = research_tool_calls[-1]
+            data = json.loads(result_text)
+            if tool_name in ("academic_search", "get_related_papers"):
+                papers = data if isinstance(data, list) else data.get("papers", [])
+                if papers:
+                    return render_search_results_card(query="Research Papers", papers=papers)
+            elif tool_name == "get_paper_by_arxiv":
+                p = data if isinstance(data, dict) else {}
+                if p.get("title"):
+                    return render_paper_card(
+                        title=p.get("title", ""),
+                        authors=p.get("authors", []),
+                        abstract=p.get("abstract", ""),
+                        arxiv_id=p.get("arxiv_id", ""),
+                        doi=p.get("doi", ""),
+                        published=p.get("published", ""),
+                        citation_count=p.get("citation_count", 0),
+                    )
+            elif tool_name == "paper_analyzer":
+                p = data.get("analysis", {}) if isinstance(data, dict) else {}
+                paper_info = data if isinstance(data, dict) else {}
+                return render_paper_card(
+                    title=paper_info.get("title", "Paper Analysis"),
+                    authors=[],
+                    abstract="",
+                    arxiv_id="",
+                    summary=p.get("summary", ""),
+                    methodology=p.get("methodology", ""),
+                    key_findings=p.get("key_findings", []),
+                    tags=p.get("tags", []),
+                    paper_id=paper_info.get("paper_id", 0),
+                )
+            elif tool_name == "citation_graph":
+                if isinstance(data, dict):
+                    paper = data.get("paper", {})
+                    refs = data.get("references", data.get("direct_references", []))
+                    cits = data.get("citations", [])
+                    return render_citation_graph_card(
+                        paper_title=paper.get("title", "Unknown"),
+                        references=refs,
+                        citations=cits,
+                    )
+            elif tool_name == "insight_generator":
+                if isinstance(data, dict) and "error" not in data:
+                    return render_review_card(
+                        topic=data.get("title", "Research Review"),
+                        review_data=data,
+                    )
+            elif tool_name == "paper_library":
+                if isinstance(data, list) and len(data) > 0:
+                    return render_search_results_card(query="My Library", papers=data)
+                if isinstance(data, dict):
+                    if "total" in data:
+                        from nanobot.research.card_renderer import render_statistics_card
+                        return render_statistics_card(data)
+                    if "paper_a" in data and "paper_b" in data:
+                        from nanobot.research.card_renderer import render_compare_card
+                        return render_compare_card(data["paper_a"], data["paper_b"])
+        except Exception as e:
+            logger.debug(f"Auto-render research card failed: {e}")
+        return ""
 
     def _should_publish_feishu_streaming(self, msg: InboundMessage, final_content: str) -> bool:
         """Use phase-1 pseudo streaming for Feishu outbound delivery."""

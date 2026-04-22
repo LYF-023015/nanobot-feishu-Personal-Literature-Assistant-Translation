@@ -221,6 +221,7 @@ def gateway(
         memory_system_config=config.tools.memory_system,
         feishu_config=config.channels.feishu,
         cron_service=cron,
+        research_config=config.tools.research,
         restrict_to_workspace=config.tools.restrict_to_workspace,
     )
     
@@ -343,6 +344,7 @@ def agent(
         memory_system_config=config.tools.memory_system,
         feishu_config=config.channels.feishu,
         restrict_to_workspace=config.tools.restrict_to_workspace,
+        research_config=config.tools.research,
     )
     
     # --- Initialize channel senders for CLI mode ---
@@ -460,6 +462,7 @@ def memory_refresh(
         memory_system_config=config.tools.memory_system,
         feishu_config=config.channels.feishu,
         restrict_to_workspace=config.tools.restrict_to_workspace,
+        research_config=config.tools.research,
     )
 
     diary_path = Path(diary).expanduser()

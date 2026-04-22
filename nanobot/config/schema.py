@@ -229,6 +229,50 @@ class MemorySystemConfig(BaseModel):
     retrieval_weights: RetrievalWeightsConfig = Field(default_factory=RetrievalWeightsConfig)
 
 
+class AcademicSearchConfig(BaseModel):
+    """Academic search tool configuration."""
+    enabled: bool = True
+    default_sources: list[str] = Field(default_factory=lambda: ["arxiv"])
+    arxiv_categories: list[str] = Field(default_factory=list)
+    semantic_scholar_api_key: str = ""
+    max_results: int = 10
+
+
+class ResearchFeedItemConfig(BaseModel):
+    """A single research feed configuration."""
+    source: str = "arxiv"
+    categories: list[str] = Field(default_factory=list)
+    keywords: list[str] = Field(default_factory=list)
+    authors: list[str] = Field(default_factory=list)
+    schedule: str = "0 8 * * *"
+    max_results: int = 5
+    auto_download_pdf: bool = False
+    notify_channel: str = "feishu"
+
+
+class ResearchFeedConfig(BaseModel):
+    """Research feed (auto paper推送) configuration."""
+    enabled: bool = False
+    feeds: list[ResearchFeedItemConfig] = Field(default_factory=list)
+
+
+class PaperStoreConfig(BaseModel):
+    """Paper store database configuration."""
+    db_path: str = Field(default_factory=lambda: str(get_workspace_path() / "research" / "papers.db"))
+    auto_extract_tags: bool = True
+    auto_sync_memory: bool = True
+
+
+class ResearchConfig(BaseModel):
+    """Research assistant configuration."""
+    enabled: bool = False
+    academic_search: AcademicSearchConfig = Field(default_factory=AcademicSearchConfig)
+    research_feed: ResearchFeedConfig = Field(default_factory=ResearchFeedConfig)
+    paper_store: PaperStoreConfig = Field(default_factory=PaperStoreConfig)
+    auto_analyze_pdf: bool = True
+    default_reading_topic: str = ""
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -239,6 +283,7 @@ class ToolsConfig(BaseModel):
     tool_history: ToolHistoryConfig = Field(default_factory=ToolHistoryConfig)
     context_compression: ContextCompressionConfig = Field(default_factory=ContextCompressionConfig)
     memory_system: MemorySystemConfig = Field(default_factory=MemorySystemConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 

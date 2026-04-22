@@ -71,7 +71,9 @@ class LiteLLMProvider(LLMProvider):
                 # Default to OpenAI-compatible API keys for custom endpoints
                 os.environ.setdefault("OPENAI_API_KEY", api_key)
         
-        if api_base:
+        # For Moonshot, don't set litellm.api_base directly - it conflicts with
+        # LiteLLM's Moonshot provider routing. MOONSHOT_API_BASE env is enough.
+        if api_base and not ("moonshot" in default_model or "kimi" in default_model):
             litellm.api_base = api_base
         
         # Disable LiteLLM logging noise
@@ -116,10 +118,19 @@ class LiteLLMProvider(LLMProvider):
             model = f"zai/{model}"
 
         # For Moonshot/Kimi, ensure moonshot/ prefix (before vLLM check)
-        if ("moonshot" in model.lower() or "kimi" in model.lower()) and not (
+        # But if api_base is explicitly set, LiteLLM treats it as a custom OpenAI-compatible
+        # endpoint and won't strip the prefix. In that case, use the raw model name.
+        is_moonshot = "moonshot" in model.lower() or "kimi" in model.lower()
+        if is_moonshot and not (
             model.startswith("moonshot/") or model.startswith("openrouter/")
         ):
             model = f"moonshot/{model}"
+        
+        # If api_base is set and this is Moonshot, LiteLLM may pass the full prefixed
+        # name to the custom endpoint. Strip the prefix to ensure the API receives
+        # the raw model name it expects (e.g. "moonshot-v1-32k" not "moonshot/moonshot-v1-32k").
+        if is_moonshot and self.api_base and model.startswith("moonshot/"):
+            model = model[len("moonshot/"):]
 
         # For Gemini, ensure gemini/ prefix if not already present
         if ("gemini" in model.lower() and not model.startswith("gemini/") and not model.startswith("openai/")):

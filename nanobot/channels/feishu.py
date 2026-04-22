@@ -255,19 +255,31 @@ class FeishuChannel(BaseChannel):
 
     async def _send_template_message(self, msg: OutboundMessage, receive_id_type: str) -> None:
         """Send one-shot interactive template card (existing behavior)."""
-        template_id = self.config.card_template_id
-        template_version_name = self.config.card_template_version_name
         metadata = msg.metadata if isinstance(msg.metadata, dict) else {}
-        template_id = metadata.get("template_id", template_id)
-        template_version_name = metadata.get("template_version_name", template_version_name)
 
-        card_text = await self._replace_local_md_images_with_keys(msg.content)
-        content = self._build_interactive_content(
-            card_text,
-            template_id=template_id,
-            template_version_name=template_version_name,
-            token_monitor=metadata.get("token_monitor"),
-        )
+        # Check for self-built research card (🎴CARD: prefix)
+        if msg.content and msg.content.startswith("🎴CARD:"):
+            try:
+                card_json = json.loads(msg.content[7:])
+                content = json.dumps(card_json, ensure_ascii=False)
+            except json.JSONDecodeError as e:
+                logger.warning(f"Invalid research card JSON: {e}")
+                content = self._build_interactive_content(
+                    msg.content,
+                    template_id=self.config.card_template_id,
+                    template_version_name=self.config.card_template_version_name,
+                    token_monitor=metadata.get("token_monitor"),
+                )
+        else:
+            template_id = metadata.get("template_id", self.config.card_template_id)
+            template_version_name = metadata.get("template_version_name", self.config.card_template_version_name)
+            card_text = await self._replace_local_md_images_with_keys(msg.content)
+            content = self._build_interactive_content(
+                card_text,
+                template_id=template_id,
+                template_version_name=template_version_name,
+                token_monitor=metadata.get("token_monitor"),
+            )
 
         request = CreateMessageRequest.builder() \
             .receive_id_type(receive_id_type) \
