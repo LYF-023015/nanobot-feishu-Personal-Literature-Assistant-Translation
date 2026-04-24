@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from typing import Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings
 
 from nanobot.utils.helpers import expand_path, get_data_path, get_workspace_path
@@ -80,7 +80,7 @@ class AgentsConfig(BaseModel):
 
 class ProviderConfig(BaseModel):
     """LLM provider configuration."""
-    api_key: str = ""
+    api_key: str | None = ""
     api_base: str | None = None
 
 
@@ -360,4 +360,5 @@ class Config(BaseSettings):
     
     class Config:
         env_prefix = "NANOBOT_"
+        extra = "ignore"
         env_nested_delimiter = "__"

@@ -12,6 +12,93 @@
 
 ---
 
+## 快速开始
+
+### 1. 安装
+
+```bash
+git clone <your-repo-url>
+cd nanobot-feishu-specilized
+pip install -e .
+```
+
+> **注意**：`pip install -e .` 必须执行，否则运行时会报 `ModuleNotFoundError: No module named 'nanobot.cli'`。
+
+### 2. 配置（Windows 建议）
+
+避免控制台 emoji 编码报错，设置环境变量：
+
+```powershell
+# PowerShell（当前会话）
+$env:PYTHONIOENCODING="utf-8"
+
+# 或者永久设置（推荐）
+[System.Environment]::SetEnvironmentVariable("PYTHONIOENCODING", "utf-8", "User")
+```
+
+### 3. 编辑配置
+
+复制下方配置到 `~/.nanobot/config.json`，填入你的 API Key：
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "model": "deepseek/deepseek-chat",
+      "provider": "deepseek",
+      "maxTokens": 4096,
+      "maxToolIterations": 15,
+      "temperature": 0.3
+    }
+  },
+  "providers": {
+    "deepseek": {
+      "apiKey": "sk-your-deepseek-key",
+      "apiBase": "https://api.deepseek.com/v1"
+    }
+  },
+  "channels": {
+    "feishu": {
+      "enabled": true,
+      "appId": "cli-your-app-id",
+      "appSecret": "your-app-secret",
+      "allowFrom": ["*"]
+    }
+  }
+}
+```
+
+### 4. 启动
+
+```powershell
+# CLI 交互模式
+nanobot
+
+# 飞书网关模式
+nanobot gateway
+```
+
+---
+
+## 更新日志
+
+### 2026-04-24
+
+**修复**
+- **模块导入错误**：`nanobot.cli` 未找到 → 项目必须通过 `pip install -e .` 以可编辑模式安装
+- **Windows GBK 编码**：配置文件读取/保存强制使用 `utf-8`，避免中文路径和配置内容解析失败
+- **Pydantic 配置校验**：`schema.py` 中 `ProviderConfig.api_key` 改为 `str | None = ""`，`Config` 模型允许忽略未知字段（兼容旧版 `api` 等字段）
+- **DeepSeek `reasoning_content` 错误**：
+  - `providers/base.py`：`LLMResponse` 新增 `reasoning_content` 字段
+  - `providers/litellm_provider.py`：从 LiteLLM 响应提取 `reasoning_content`；发送前对 DeepSeek 模型的 assistant 消息自动补齐空 `reasoning_content`
+  - `session/manager.py`：`get_history()` 输出时保留 assistant 消息的 `reasoning_content`
+  - `agent/loop.py`：保存 assistant 消息时把 `reasoning_content` 写入会话历史
+  - 彻底解决 DeepSeek thinking mode 下多轮对话 400 错误
+
+---
+
+---
+
 ## 一、项目定位与创新点
 
 ### 1.1 为什么要做这个项目？
@@ -614,6 +701,6 @@ nano ~/.nanobot/config.json
 
 ---
 
-*文档版本：v1.0*
-*生成时间：2026-04-22*
+*文档版本：v1.1*
+*生成时间：2026-04-24*
 *基于 nanobot-feishu-specilized 二次开发*

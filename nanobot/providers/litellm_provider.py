@@ -168,6 +168,13 @@ class LiteLLMProvider(LLMProvider):
         if reasoning_effort is not None and self._supports_reasoning_effort(model):
             kwargs["reasoning_effort"] = reasoning_effort
         
+        # DeepSeek workaround: assistant messages must include reasoning_content
+        # field when the API enters thinking mode, even if empty.
+        if "deepseek" in model:
+            for msg in kwargs["messages"]:
+                if msg.get("role") == "assistant" and "reasoning_content" not in msg:
+                    msg["reasoning_content"] = ""
+        
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)
@@ -280,6 +287,7 @@ class LiteLLMProvider(LLMProvider):
             tool_calls=tool_calls,
             finish_reason=finish_reason,
             usage=usage,
+            reasoning_content=message.get("reasoning_content"),
         )
     
     def _parse_response(self, response: Any) -> LLMResponse:
@@ -321,6 +329,7 @@ class LiteLLMProvider(LLMProvider):
             tool_calls=tool_calls,
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
+            reasoning_content=getattr(message, "reasoning_content", None),
         )
     
     def get_default_model(self) -> str:

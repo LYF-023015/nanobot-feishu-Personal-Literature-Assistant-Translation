@@ -114,6 +114,8 @@ class Session:
                 msg["tool_call_id"] = m["tool_call_id"]
             if "name" in m:
                 msg["name"] = m["name"]
+            if "reasoning_content" in m and m["reasoning_content"]:
+                msg["reasoning_content"] = m["reasoning_content"]
             out.append(msg)
             
         # Repair broken tool sequences caused by truncation or interrupted execution

@@ -37,6 +37,7 @@ from nanobot.agent.subagent import SubagentManager
 from nanobot.session.compressor import SessionContextCompressor
 from nanobot.session.manager import Session, SessionManager
 
+#如果研究工具启用，则导入研究相关工具和配置
 if TYPE_CHECKING:
     from nanobot.config.schema import (
         ExecToolConfig,
@@ -617,7 +618,7 @@ class AgentLoop:
                     )
                     
                     # Persist tool calls onto session list natively
-                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts, reasoning_content=response.reasoning_content)
                     
                     # Execute tools
                     for tool_call in response.tool_calls:
@@ -737,7 +738,7 @@ class AgentLoop:
             final_content = "I've completed processing but have no response to give."
         
         # Save to session
-        session.add_message("assistant", final_content)
+        session.add_message("assistant", final_content, reasoning_content=response.reasoning_content if 'response' in locals() else None)
         await self.compressor.compress_if_needed(session)
         self.sessions.save(session)
 
@@ -1195,7 +1196,7 @@ class AgentLoop:
                     )
                     
                     # Persist tool calls onto session list natively
-                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts)
+                    session.add_message("assistant", response.content, tool_calls=tool_call_dicts, reasoning_content=response.reasoning_content)
                     
                     for tool_call in response.tool_calls:
                         args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
@@ -1220,7 +1221,7 @@ class AgentLoop:
             final_content = "Background task completed."
         
         # Save to session (mark as system message in history)
-        session.add_message("assistant", final_content)
+        session.add_message("assistant", final_content, reasoning_content=response.reasoning_content if 'response' in locals() else None)
         await self.compressor.compress_if_needed(session)
         self.sessions.save(session)
 
