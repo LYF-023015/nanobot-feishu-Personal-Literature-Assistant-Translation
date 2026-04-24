@@ -10,27 +10,30 @@ from nanobot.utils.helpers import expand_path, get_data_path, get_workspace_path
 
 class WhatsAppConfig(BaseModel):
     """WhatsApp channel configuration."""
+    model_config = ConfigDict(populate_by_name=True)
     enabled: bool = False
     bridge_url: str = "ws://localhost:3001"
-    allow_from: list[str] = Field(default_factory=list)  # Allowed phone numbers
+    allow_from: list[str] = Field(default_factory=list, alias="allowFrom")  # Allowed phone numbers
 
 
 class TelegramConfig(BaseModel):
     """Telegram channel configuration."""
+    model_config = ConfigDict(populate_by_name=True)
     enabled: bool = False
     token: str = ""  # Bot token from @BotFather
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs or usernames
+    allow_from: list[str] = Field(default_factory=list, alias="allowFrom")  # Allowed user IDs or usernames
     proxy: str | None = None  # HTTP/SOCKS5 proxy URL, e.g. "http://127.0.0.1:7890" or "socks5://127.0.0.1:1080"
 
 
 class FeishuConfig(BaseModel):
     """Feishu/Lark channel configuration using WebSocket long connection."""
+    model_config = ConfigDict(populate_by_name=True)
     enabled: bool = False
     app_id: str = ""  # App ID from Feishu Open Platform
     app_secret: str = ""  # App Secret from Feishu Open Platform
     encrypt_key: str = ""  # Encrypt Key for event subscription (optional)
     verification_token: str = ""  # Verification Token for event subscription (optional)
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user open_ids
+    allow_from: list[str] = Field(default_factory=list, alias="allowFrom")  # Allowed user open_ids
     media_dir: str = Field(default_factory=lambda: str(get_data_path() / "media"))  # Directory to save received media files
     card_template_id: str = "AAqK6dMNHUVKE"  # Feishu card template id for outbound interactive messages
     card_template_version_name: str = "1.0.0"  # Card template version used for outbound interactive messages
@@ -45,11 +48,24 @@ class FeishuConfig(BaseModel):
 
 class DiscordConfig(BaseModel):
     """Discord channel configuration."""
+    model_config = ConfigDict(populate_by_name=True)
     enabled: bool = False
     token: str = ""  # Bot token from Discord Developer Portal
-    allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
+    allow_from: list[str] = Field(default_factory=list, alias="allowFrom")  # Allowed user IDs
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
+
+
+class FeishuWebhookConfig(BaseModel):
+    """Feishu custom bot (webhook) channel configuration for external groups."""
+    model_config = ConfigDict(populate_by_name=True)
+    enabled: bool = False
+    webhook_url: str = ""  # Custom bot webhook URL, e.g. https://open.feishu.cn/open-apis/bot/v2/hook/xxx
+    verification_token: str = ""  # Verification token for callback validation
+    encrypt_key: str = ""  # Encrypt key for event payload decryption (optional)
+    callback_port: int = 18791  # HTTP server port for receiving callbacks
+    callback_path: str = "/feishu/webhook"  # Callback URL path
+    allow_from: list[str] = Field(default_factory=list, alias="allowFrom")  # Allowed sender open_ids
 
 
 class ChannelsConfig(BaseModel):
@@ -58,6 +74,7 @@ class ChannelsConfig(BaseModel):
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)
     feishu: FeishuConfig = Field(default_factory=FeishuConfig)
+    feishu_webhook: FeishuWebhookConfig = Field(default_factory=FeishuWebhookConfig)
 
 
 class AgentDefaults(BaseModel):
@@ -265,7 +282,7 @@ class PaperStoreConfig(BaseModel):
 
 class ResearchConfig(BaseModel):
     """Research assistant configuration."""
-    enabled: bool = False
+    enabled: bool = True
     academic_search: AcademicSearchConfig = Field(default_factory=AcademicSearchConfig)
     research_feed: ResearchFeedConfig = Field(default_factory=ResearchFeedConfig)
     paper_store: PaperStoreConfig = Field(default_factory=PaperStoreConfig)

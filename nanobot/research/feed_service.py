@@ -180,24 +180,89 @@ class ResearchFeedService:
         )
         paper_id = self.paper_store.add_paper(p)
 
-        # Build push message
+        # Build push message as Feishu interactive card
         title = paper["title"]
         authors = ", ".join(paper.get("authors", [])[:3])
         if len(paper.get("authors", [])) > 3:
             authors += " et al."
-        abstract_preview = paper.get("abstract", "")[:300]
-        if len(paper.get("abstract", "")) > 300:
+        abstract_preview = paper.get("abstract", "")[:280]
+        if len(paper.get("abstract", "")) > 280:
             abstract_preview += "..."
+        
+        arxiv_url = paper.get("url", "")
+        pdf_url = paper.get("pdf_url", "")
+        published = paper.get("published", "")
+        categories = ", ".join(paper.get("categories", [])[:3])
 
-        message = (
-            f"📄 **New Paper Alert**\n\n"
-            f"**{title}**\n"
-            f"*{authors}* | {paper.get('published', '')}\n\n"
-            f"🔑 **Abstract:**\n{abstract_preview}\n\n"
-            f"🔗 [arXiv]({paper.get('url', '')}) | [PDF]({paper.get('pdf_url', '')})\n"
-            f"📚 Library ID: `{paper_id}`\n\n"
-            f"Reply with 'analyze {paper_id}' to parse and analyze this paper."
-        )
+        card_json = {
+            "config": {"wide_screen_mode": True},
+            "elements": [
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"**{title}**"
+                    }
+                },
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"*{authors}* ｜ {published} ｜ {categories}"
+                    }
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "div",
+                    "text": {
+                        "tag": "lark_md",
+                        "content": f"🔑 **摘要：**\n{abstract_preview}"
+                    }
+                },
+                {"tag": "hr"},
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": "📄 arXiv 页面"
+                            },
+                            "type": "primary",
+                            "url": arxiv_url
+                        },
+                        {
+                            "tag": "button",
+                            "text": {
+                                "tag": "plain_text",
+                                "content": "📥 PDF 下载"
+                            },
+                            "type": "default",
+                            "url": pdf_url
+                        }
+                    ]
+                },
+                {
+                    "tag": "note",
+                    "elements": [
+                        {
+                            "tag": "plain_text",
+                            "content": f"Library ID: {paper_id} ｜ 回复 '分析 {paper_id}' 让 NanoScholar 深度解析这篇论文"
+                        }
+                    ]
+                }
+            ],
+            "header": {
+                "template": "blue",
+                "title": {
+                    "tag": "plain_text",
+                    "content": "📄 每日论文推送"
+                }
+            }
+        }
+
+        message = f"🎴CARD:{json.dumps(card_json, ensure_ascii=False)}"
 
         # Publish via bus
         from nanobot.bus.events import OutboundMessage

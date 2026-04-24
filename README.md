@@ -82,17 +82,39 @@ nanobot gateway
 
 ## 更新日志
 
-### 2026-04-24
+### 2026-04-24  22:30 — NanoScholar 科研助手 v1.0 + Webhook 飞书通道
+
+**新增：科研文献助手核心能力（Phase 1~4 全流程）**
+- **科研角色定义**：重写 `workspace/AGENTS.md` + `SOUL.md`，Agent 从"通用助手"进化为"科研副手"
+- **4 个科研 Skill**：
+  - `literature-search` — 学术搜索策略（always 常驻）
+  - `paper-analysis` — 论文深度阅读框架（always 常驻）
+  - `literature-review` — 系统性文献综述（关键词触发：综述/梳理/对比）
+  - `research-tracking` — 研究方向追踪（关键词触发：追踪/趋势/新进展）
+- **Skill 系统修复**：`loop.py` 新增启发式 Skill 选择 + `context.py` 支持动态 Skill 加载，Skill 真正生效
+- **Research 模块默认启用**：`schema.py` 中 `ResearchConfig.enabled` 改为 `True`，8 个研究工具自动注册
+- **Feishu 论文推送卡片化**：`feed_service.py` 推送从纯文本升级为交互卡片（标题/作者/摘要/按钮）
+- **个性化研究记忆**：新增 `workspace/memory/research_profile.md`，Agent 自动读取并注入 System Prompt
+
+**新增：Webhook 飞书通道（外部群方案）**
+- 新建 `nanobot/channels/feishu_webhook.py`：Flask HTTP 服务接收飞书回调 + Webhook 发送回复
+- 解决外部群无法添加自建应用机器人的限制，支持自定义机器人（Webhook 机器人）
+- 配置项：`feishuWebhook.enabled` + `webhookUrl` + `callbackPort` + `callbackPath`
+
+---
+
+### 2026-04-24 15:00 — 稳定性修复
 
 **修复**
+- **飞书 Access Denied**：`base.py` `is_allowed()` 新增 `"*"` 通配符支持；`schema.py` 各 Channel Config 添加 `alias="allowFrom"` + `populate_by_name=True`，兼容驼峰配置
 - **模块导入错误**：`nanobot.cli` 未找到 → 项目必须通过 `pip install -e .` 以可编辑模式安装
-- **Windows GBK 编码**：配置文件读取/保存强制使用 `utf-8`，避免中文路径和配置内容解析失败
-- **Pydantic 配置校验**：`schema.py` 中 `ProviderConfig.api_key` 改为 `str | None = ""`，`Config` 模型允许忽略未知字段（兼容旧版 `api` 等字段）
-- **DeepSeek `reasoning_content` 错误**：
+- **Windows GBK 编码**：配置文件读取/保存强制使用 `utf-8`
+- **Pydantic 配置校验**：`ProviderConfig.api_key` 改为 `str | None = ""`，`Config` 模型允许忽略未知字段
+- **DeepSeek `reasoning_content` 错误**（4 文件联动修复）：
   - `providers/base.py`：`LLMResponse` 新增 `reasoning_content` 字段
-  - `providers/litellm_provider.py`：从 LiteLLM 响应提取 `reasoning_content`；发送前对 DeepSeek 模型的 assistant 消息自动补齐空 `reasoning_content`
-  - `session/manager.py`：`get_history()` 输出时保留 assistant 消息的 `reasoning_content`
-  - `agent/loop.py`：保存 assistant 消息时把 `reasoning_content` 写入会话历史
+  - `providers/litellm_provider.py`：提取 + 自动补齐空 `reasoning_content`
+  - `session/manager.py`：`get_history()` 保留 `reasoning_content`
+  - `agent/loop.py`：保存时写入 `reasoning_content`
   - 彻底解决 DeepSeek thinking mode 下多轮对话 400 错误
 
 ---
@@ -701,6 +723,6 @@ nano ~/.nanobot/config.json
 
 ---
 
-*文档版本：v1.1*
+*文档版本：v1.2*
 *生成时间：2026-04-24*
 *基于 nanobot-feishu-specilized 二次开发*

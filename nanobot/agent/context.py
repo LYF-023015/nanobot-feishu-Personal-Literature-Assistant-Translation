@@ -72,16 +72,26 @@ class ContextBuilder:
         if retrieved_memories_block:
             parts.append(retrieved_memories_block)
 
+
+        # Research profile
+        research_profile = self._load_research_profile()
+        if research_profile:
+            parts.append(f"# Research Profile\n\n{research_profile}")
         if session_summary:
             parts.append(f"# Session Rolling Summary\n\n{session_summary}")
         
         # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
-        always_skills = self.skills.get_always_skills()
-        if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
+        # 1. Always-loaded skills + explicitly requested skills: include full content
+        active_skill_names = list(self.skills.get_always_skills())
+        if skill_names:
+            for name in skill_names:
+                if name not in active_skill_names:
+                    active_skill_names.append(name)
+        
+        if active_skill_names:
+            active_content = self.skills.load_skills_for_context(active_skill_names)
+            if active_content:
+                parts.append(f"# Active Skills\n\n{active_content}")
         
         # 2. Available skills: only show summary (agent uses read_file to load)
         skills_summary = self.skills.build_skills_summary()
@@ -95,6 +105,19 @@ Skills with available=\"false\" need dependencies installed first - you can try 
         
         return "\n\n---\n\n".join(parts)
     
+
+    def _load_research_profile(self) -> str:
+        """Load user research profile if it exists."""
+        profile_path = self.workspace / "memory" / "research_profile.md"
+        if profile_path.exists():
+            content = profile_path.read_text(encoding="utf-8")
+            # Skip the YAML frontmatter if present
+            if content.startswith("---"):
+                end = content.find("---", 3)
+                if end != -1:
+                    content = content[end + 3:].strip()
+            return content.strip()
+        return ""
     def _get_identity(self) -> str:
         """Get the core identity section."""
         from datetime import datetime

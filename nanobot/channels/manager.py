@@ -77,6 +77,17 @@ class ChannelManager:
                 logger.info("Feishu channel enabled")
             except ImportError as e:
                 logger.warning(f"Feishu channel not available: {e}")
+        
+        # Feishu webhook channel (for external groups)
+        if self.config.channels.feishu_webhook.enabled:
+            try:
+                from nanobot.channels.feishu_webhook import FeishuWebhookChannel
+                self.channels["feishu_webhook"] = FeishuWebhookChannel(
+                    self.config.channels.feishu_webhook, self.bus
+                )
+                logger.info("Feishu webhook channel enabled")
+            except ImportError as e:
+                logger.warning(f"Feishu webhook channel not available: {e}")
     
     async def start_all(self) -> None:
         """Start WhatsApp channel and the outbound dispatcher."""

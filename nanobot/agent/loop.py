@@ -193,6 +193,30 @@ class AgentLoop:
             )
         self._register_default_tools()
 
+        # Default skills for research mode
+        self._default_skill_names: list[str] = []
+        if getattr(self.research_config, "enabled", False):
+            self._default_skill_names = ["literature-search", "paper-analysis"]
+
+
+    def _select_skills_for_message(self, message: str) -> list[str]:
+        """Heuristically select skills based on message content."""
+        text = message.lower()
+        skills = list(self._default_skill_names)
+        
+        # literature-review: survey/synthesis requests
+        review_keywords = ["综述", "梳理", "总结", "survey", "review", "systematic", "overview", "comparison", "对比"]
+        if any(kw in text for kw in review_keywords):
+            if "literature-review" not in skills:
+                skills.append("literature-review")
+        
+        # research-tracking: trend/monitoring requests
+        tracking_keywords = ["追踪", "监控", "新进展", "趋势", "tracking", "trend", "latest", "recent", "new papers", "动态"]
+        if any(kw in text for kw in tracking_keywords):
+            if "research-tracking" not in skills:
+                skills.append("research-tracking")
+        
+        return skills
     def _resolve_history_limit(self, session: Session, session_summary: str) -> int:
         """Resolve history size while preventing any summary-to-window gaps."""
         if not self.context_compression_config.enabled:
@@ -554,6 +578,7 @@ class AgentLoop:
             session_summary=session_summary,
             media=msg.media if msg.media else None,
             channel=msg.channel,
+            skill_names=self._select_skills_for_message(msg.content),
             chat_id=msg.chat_id,
         )
         

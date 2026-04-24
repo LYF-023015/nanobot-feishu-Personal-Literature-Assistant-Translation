@@ -74,6 +74,10 @@ class BaseChannel(ABC):
         if not allow_list:
             return True
         
+        # Wildcard: "*" allows everyone
+        if "*" in allow_list:
+            return True
+        
         sender_str = str(sender_id)
         if sender_str in allow_list:
             return True
